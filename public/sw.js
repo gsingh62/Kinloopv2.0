@@ -47,6 +47,18 @@ self.addEventListener('message', (event) => {
 });
 
 // ─── Push Notifications ───
+const COLLAPSE_THRESHOLD = 5;
+
+function timeAgo(timestamp) {
+    const seconds = Math.floor((Date.now() - timestamp) / 1000);
+    if (seconds < 60) return 'just now';
+    const minutes = Math.floor(seconds / 60);
+    if (minutes < 60) return minutes + 'm ago';
+    const hours = Math.floor(minutes / 60);
+    if (hours < 24) return hours + 'h ago';
+    return Math.floor(hours / 24) + 'd ago';
+}
+
 self.addEventListener('push', (event) => {
     if (!event.data) return;
     let data;
@@ -56,26 +68,63 @@ self.addEventListener('push', (event) => {
         data = { title: 'KinLoop', body: event.data.text() };
     }
 
-    const uniqueTag = data.tag || ('kinloop-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6));
+    event.waitUntil((async () => {
+        // Get all existing KinLoop notifications
+        const existing = await self.registration.getNotifications();
 
-    const options = {
-        body: data.body || '',
-        icon: '/icons/icon-192.png',
-        badge: '/icons/icon-192.png',
-        tag: uniqueTag,
-        renotify: true,
-        requireInteraction: false,
-        data: {
-            url: data.url || '/',
-            roomId: data.roomId,
-        },
-        vibrate: [200, 100, 200],
-        silent: false,
-    };
+        // Count only non-summary notifications
+        const individual = existing.filter(n => n.tag !== 'kinloop-summary');
+        const totalAfterThis = individual.length + 1;
 
-    event.waitUntil(
-        self.registration.showNotification(data.title || 'KinLoop', options)
-    );
+        if (totalAfterThis >= COLLAPSE_THRESHOLD) {
+            // Close all individual notifications
+            for (const n of individual) {
+                n.close();
+            }
+
+            // Build summary
+            const latestBody = data.body || '';
+            const latestTitle = data.title || 'KinLoop';
+            const summaryBody = `${totalAfterThis} notifications \u2022 Latest: ${latestBody} \u2022 ${timeAgo(Date.now())}`;
+
+            await self.registration.showNotification(
+                `KinLoop \u2014 ${totalAfterThis} new`,
+                {
+                    body: summaryBody,
+                    icon: '/icons/icon-192.png',
+                    badge: '/icons/icon-192.png',
+                    tag: 'kinloop-summary',
+                    renotify: true,
+                    requireInteraction: false,
+                    data: {
+                        url: data.url || '/',
+                        roomId: data.roomId,
+                        count: totalAfterThis,
+                    },
+                    vibrate: [200, 100, 200],
+                    silent: false,
+                }
+            );
+        } else {
+            // Show individual notification
+            const uniqueTag = data.tag || ('kinloop-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6));
+
+            await self.registration.showNotification(data.title || 'KinLoop', {
+                body: data.body || '',
+                icon: '/icons/icon-192.png',
+                badge: '/icons/icon-192.png',
+                tag: uniqueTag,
+                renotify: true,
+                requireInteraction: false,
+                data: {
+                    url: data.url || '/',
+                    roomId: data.roomId,
+                },
+                vibrate: [200, 100, 200],
+                silent: false,
+            });
+        }
+    })());
 });
 
 // ─── Notification Click ───

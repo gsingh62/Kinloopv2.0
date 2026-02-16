@@ -236,13 +236,13 @@ export function NotificationBanner() {
         setRefreshing(true);
         setTestResult(null);
         try {
-            const { subscribeToPush } = await import('../lib/pushUtils');
-            subscribeToPush();
-            setTestResult('Subscription refreshed');
-        } catch {
-            setTestResult('Refresh failed');
+            const { subscribeToPushWithStatus } = await import('../lib/pushUtils');
+            const result = await subscribeToPushWithStatus();
+            setTestResult(result);
+        } catch (err: any) {
+            setTestResult(`Refresh error: ${err.message}`);
         } finally {
-            setTimeout(() => setRefreshing(false), 2000);
+            setRefreshing(false);
         }
     };
 
@@ -257,12 +257,14 @@ export function NotificationBanner() {
                 return;
             }
 
-            // First refresh subscription
-            const { subscribeToPush } = await import('../lib/pushUtils');
-            subscribeToPush();
-
-            // Wait for subscription to be saved
-            await new Promise(r => setTimeout(r, 3000));
+            // First refresh subscription synchronously
+            const { subscribeToPushWithStatus } = await import('../lib/pushUtils');
+            const subResult = await subscribeToPushWithStatus();
+            if (subResult.startsWith('error')) {
+                setTestResult(`Subscribe: ${subResult}`);
+                setTesting(false);
+                return;
+            }
 
             // Check subscription status
             const checkRes = await fetch('/api/push-test', {

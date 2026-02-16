@@ -11,22 +11,22 @@ import {
     getDocs,
     serverTimestamp,
 } from 'firebase/firestore';
-import { db } from '../lib/firebase';
+import { db, auth } from '../lib/firebase';
 import { useEffect, useState, useRef } from 'react';
 import {
     Plus, Trash2, ChevronDown, CheckCircle2, Circle,
-    ListTodo, MoreHorizontal, Pencil, X, Loader2,
+    ListTodo, MoreHorizontal, Pencil, X, Loader2, Archive,
 } from 'lucide-react';
-
-// Warm theme color mappings used throughout this component
 
 interface ListTabProps {
     roomId: string | null;
+    roomName?: string;
     onAddItem?: (text: string) => void;
     onDeleteItem?: (itemId: string) => void;
+    onActivity?: (activity: { type: string; detail: string }) => void;
 }
 
-export default function ListTab({ roomId }: ListTabProps) {
+export default function ListTab({ roomId, roomName, onActivity }: ListTabProps) {
     const [lists, setLists] = useState<any[]>([]);
     const [selectedListId, setSelectedListId] = useState<string | null>(null);
     const [items, setItems] = useState<any[]>([]);
@@ -66,33 +66,69 @@ export default function ListTab({ roomId }: ListTabProps) {
         return () => unsubscribe();
     }, [roomId]);
 
-    // Load items for selected list
+    // Load items for selected list + detect changes from others
+    const itemCountRef = useRef<number | null>(null);
+    const localActionRef = useRef(false);
+
     useEffect(() => {
         if (!roomId || !selectedListId) return;
+        itemCountRef.current = null;
         const q = query(
             collection(db, 'rooms', roomId, 'lists', selectedListId, 'items'),
             orderBy('createdAt')
         );
         const unsubscribe = onSnapshot(q, snapshot => {
-            setItems(snapshot.docs.map(d => ({ id: d.id, ...d.data() })));
+            const newItems = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+            const currentUid = auth.currentUser?.uid;
+
+            // Detect additions/removals from other users
+            if (itemCountRef.current !== null && !localActionRef.current && onActivity) {
+                const diff = newItems.length - itemCountRef.current;
+                if (diff > 0) {
+                    // Check if the new items were added by someone else
+                    const added = newItems.filter(
+                        item => !(items.find(i => i.id === item.id)) && (item as any).createdBy && (item as any).createdBy !== currentUid
+                    );
+                    if (added.length > 0) {
+                        const names = added.map(i => (i as any).content).join(', ');
+                        onActivity({ type: 'add', detail: `${added.length} item${added.length > 1 ? 's' : ''} added: ${names}` });
+                    }
+                } else if (diff < 0) {
+                    onActivity({ type: 'remove', detail: `${Math.abs(diff)} item${Math.abs(diff) > 1 ? 's' : ''} removed` });
+                }
+            }
+            localActionRef.current = false;
+            itemCountRef.current = newItems.length;
+            setItems(newItems);
         });
         return () => unsubscribe();
     }, [roomId, selectedListId]);
 
     const selectedList = lists.find(l => l.id === selectedListId);
     const completedCount = items.filter(i => i.completed).length;
+    const [archiving, setArchiving] = useState(false);
 
     const handleAddItem = async () => {
         if (!newItem.trim() || !roomId || !selectedListId) return;
         setAddingItem(true);
+        localActionRef.current = true;
+        const itemText = newItem.trim();
         try {
             await addDoc(collection(db, 'rooms', roomId, 'lists', selectedListId, 'items'), {
-                content: newItem.trim(),
+                content: itemText,
                 completed: false,
                 createdAt: serverTimestamp(),
+                createdBy: auth.currentUser?.uid || '',
             });
             setNewItem('');
             inputRef.current?.focus();
+            // Push notification to other members
+            const user = auth.currentUser;
+            if (user) {
+                const who = user.email?.split('@')[0] || 'Someone';
+                const listLabel = selectedList?.name || 'a list';
+                import('../lib/pushUtils').then(m => m.notifyRoomMembers(roomId!, user.uid, `${who} added to ${listLabel}`, itemText, `/room/${roomId}`));
+            }
         } catch (e) {
             console.error('Failed to add item:', e);
         } finally {
@@ -109,7 +145,16 @@ export default function ListTab({ roomId }: ListTabProps) {
 
     const handleDeleteItem = async (itemId: string) => {
         if (!roomId || !selectedListId) return;
+        localActionRef.current = true;
+        const removedItem = items.find(i => i.id === itemId);
         await deleteDoc(doc(db, 'rooms', roomId, 'lists', selectedListId, 'items', itemId));
+        // Push notification to other members
+        const user = auth.currentUser;
+        if (user && removedItem) {
+            const who = user.email?.split('@')[0] || 'Someone';
+            const listLabel = selectedList?.name || 'a list';
+            import('../lib/pushUtils').then(m => m.notifyRoomMembers(roomId!, user.uid, `${who} removed from ${listLabel}`, (removedItem as any).content || 'an item', `/room/${roomId}`));
+        }
     };
 
     const handleAddList = async () => {
@@ -158,6 +203,28 @@ export default function ListTab({ roomId }: ListTabProps) {
         });
         setEditingListName(false);
         setShowListMenu(false);
+    };
+
+    const handleArchiveCompleted = async () => {
+        if (!roomId || !selectedListId) return;
+        const completedItems = items.filter(i => i.completed);
+        if (completedItems.length === 0) return;
+        const confirmed = confirm(`Remove ${completedItems.length} completed item${completedItems.length > 1 ? 's' : ''}?`);
+        if (!confirmed) return;
+        setArchiving(true);
+        localActionRef.current = true;
+        setShowListMenu(false);
+        try {
+            await Promise.all(
+                completedItems.map(item =>
+                    deleteDoc(doc(db, 'rooms', roomId!, 'lists', selectedListId!, 'items', item.id))
+                )
+            );
+        } catch (e) {
+            console.error('Failed to archive items:', e);
+        } finally {
+            setArchiving(false);
+        }
     };
 
     return (
@@ -214,7 +281,7 @@ export default function ListTab({ roomId }: ListTabProps) {
                                 <MoreHorizontal size={18} />
                             </button>
                             {showListMenu && (
-                                <div className="absolute right-0 top-full mt-1 w-44 bg-white border border-warmgray-200 rounded-xl shadow-lg py-1 z-20">
+                                <div className="absolute right-0 top-full mt-1 w-52 bg-white border border-warmgray-200 rounded-xl shadow-lg py-1 z-20">
                                     <button
                                         onClick={() => {
                                             setEditName(selectedList?.name || '');
@@ -225,6 +292,17 @@ export default function ListTab({ roomId }: ListTabProps) {
                                     >
                                         <Pencil size={14} /> Rename List
                                     </button>
+                                    {completedCount > 0 && (
+                                        <button
+                                            onClick={handleArchiveCompleted}
+                                            disabled={archiving}
+                                            className="w-full flex items-center gap-2 px-3 py-2 text-sm text-warmgray-700 hover:bg-warmgray-50 disabled:opacity-50"
+                                        >
+                                            <Archive size={14} />
+                                            {archiving ? 'Archiving...' : `Archive ${completedCount} completed`}
+                                        </button>
+                                    )}
+                                    <div className="my-1 border-t border-warmgray-100" />
                                     <button
                                         onClick={handleDeleteList}
                                         className="w-full flex items-center gap-2 px-3 py-2 text-sm text-red-600 hover:bg-red-50"
@@ -280,9 +358,21 @@ export default function ListTab({ roomId }: ListTabProps) {
                 <div className="mb-4">
                     <div className="flex items-center justify-between mb-1.5">
                         <span className="text-xs text-warmgray-400">{completedCount} of {items.length} completed</span>
-                        <span className="text-xs font-medium text-warmgray-500">
-                            {items.length > 0 ? Math.round((completedCount / items.length) * 100) : 0}%
-                        </span>
+                        <div className="flex items-center gap-2">
+                            {completedCount > 0 && (
+                                <button
+                                    onClick={handleArchiveCompleted}
+                                    disabled={archiving}
+                                    className="flex items-center gap-1 text-[11px] text-warmgray-400 hover:text-kin-600 transition-colors disabled:opacity-50"
+                                >
+                                    <Archive size={12} />
+                                    {archiving ? 'Archiving...' : 'Archive completed'}
+                                </button>
+                            )}
+                            <span className="text-xs font-medium text-warmgray-500">
+                                {items.length > 0 ? Math.round((completedCount / items.length) * 100) : 0}%
+                            </span>
+                        </div>
                     </div>
                     <div className="h-1.5 bg-warmgray-100 rounded-full overflow-hidden">
                         <div

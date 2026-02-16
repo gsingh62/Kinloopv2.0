@@ -15,6 +15,9 @@ import {
     saveDoc,
     subscribeToDoc,
     subscribeToRecipes,
+    leaveRoom,
+    deleteRoom,
+    removeMember,
     type Recipe,
 } from '../../lib/firestoreUtils';
 import ChatTab from '../../components/ChatTab';
@@ -25,12 +28,13 @@ import PhotoTab from '../../components/PhotoTab';
 import AIChatTab from '../../components/AIChatTab';
 import RecipesTab from '../../components/RecipesTab';
 import RoomLayout from '../../components/RoomLayout';
-import { ToastContainer, useToast, sendBrowserNotification } from '../../components/Toast';
+import { ToastContainer, useToast, sendBrowserNotification, NotificationBanner } from '../../components/Toast';
 import { nanoid } from 'nanoid';
 import DocsList from "../../components/DocsList";
 import MobileRoomView from '../../components/MobileRoomView';
 import {useIsMobileDevice} from "../../utils/isMobileDevice";
 import { Calendar, CheckSquare, MessageCircle, FileText, Image, Sparkles, ChefHat } from 'lucide-react';
+import { startPresence, subscribeToPresence, subscribeToReadReceipts, updateReadReceipt, type PresenceData, type ReadReceipt } from '../../lib/presenceUtils';
 
 export default function RoomPage() {
     const router = useRouter();
@@ -52,6 +56,10 @@ export default function RoomPage() {
     const msgCountRef = useRef<number | null>(null);
     const activeTabRef = useRef(activeTab);
     activeTabRef.current = activeTab;
+
+    // ─── Presence & read receipt state ───
+    const [presenceData, setPresenceData] = useState<PresenceData[]>([]);
+    const [readReceipts, setReadReceipts] = useState<ReadReceipt[]>([]);
 
     const roomId = typeof router.query.roomId === 'string' ? router.query.roomId : null;
 
@@ -159,6 +167,32 @@ export default function RoomPage() {
         return () => unsubscribe();
     }, [roomId, addToast, handleTabSwitch]);
 
+    // ─── Presence tracking ───
+    useEffect(() => {
+        if (!roomId || !auth.currentUser) return;
+        const cleanup = startPresence(roomId);
+        return () => { cleanup?.(); };
+    }, [roomId]);
+
+    useEffect(() => {
+        if (!roomId) return;
+        const unsub = subscribeToPresence(roomId, setPresenceData);
+        return () => unsub();
+    }, [roomId]);
+
+    // ─── Read receipts ───
+    useEffect(() => {
+        if (!roomId) return;
+        const unsub = subscribeToReadReceipts(roomId, setReadReceipts);
+        return () => unsub();
+    }, [roomId]);
+
+    const handleMessagesViewed = useCallback((lastMessageId: string) => {
+        if (roomId && activeTab === 'chat') {
+            updateReadReceipt(roomId, lastMessageId);
+        }
+    }, [roomId, activeTab]);
+
     useEffect(() => {
         if (!roomId) return;
         getLists(roomId, setLists);
@@ -203,13 +237,47 @@ export default function RoomPage() {
         }
     };
 
+    const isOwner = room?.createdBy === auth.currentUser?.uid || room?.memberIds?.[0] === auth.currentUser?.uid;
+
+    const handleLeaveRoom = async () => {
+        const user = auth.currentUser;
+        if (!user || !roomId) return;
+        const confirmed = confirm('Are you sure you want to leave this room?');
+        if (!confirmed) return;
+        await leaveRoom(roomId, user.uid);
+        router.push('/dashboard');
+    };
+
+    const handleDeleteRoom = async () => {
+        if (!roomId) return;
+        const confirmed = confirm('Delete this room and ALL its data? This cannot be undone.');
+        if (!confirmed) return;
+        const doubleConfirm = confirm('Really delete? All lists, chats, docs, events, and recipes will be permanently removed.');
+        if (!doubleConfirm) return;
+        await deleteRoom(roomId);
+        router.push('/dashboard');
+    };
+
+    const handleRemoveMember = async (userId: string) => {
+        if (!roomId) return;
+        const member = members.find(m => m.uid === userId);
+        const name = member?.name || member?.email?.split('@')[0] || 'this member';
+        const confirmed = confirm(`Remove ${name} from this room?`);
+        if (!confirmed) return;
+        await removeMember(roomId, userId);
+        setMembers(prev => prev.filter(m => m.uid !== userId));
+    };
+
     // Build a lightweight list summary for the AI context
-    const [allLists, setAllLists] = useState<{id: string; name: string}[]>([]);
+    const [allLists, setAllLists] = useState<{id: string; name: string; type?: string}[]>([]);
     const [recipes, setRecipes] = useState<Recipe[]>([]);
     useEffect(() => {
         if (!roomId) return;
         const unsub = onSnapshot(collection(db, 'rooms', roomId, 'lists'), (snap) => {
-            setAllLists(snap.docs.map(d => ({ id: d.id, name: (d.data() as any).name || 'Untitled' })));
+            setAllLists(snap.docs.map(d => {
+                const data = d.data() as any;
+                return { id: d.id, name: data.name || 'Untitled', type: data.type || 'list' };
+            }));
         });
         return () => unsub();
     }, [roomId]);
@@ -244,11 +312,18 @@ export default function RoomPage() {
     const renderTabContent = () => {
         switch (activeTab) {
             case 'lists':
-                return <ListTab roomId={roomId} roomName={room?.name} onAddItem={handleAddListItem} onDeleteItem={handleDeleteListItem} onActivity={handleListActivity} />;
+                return <ListTab roomId={roomId} roomName={room?.name} members={members} onAddItem={handleAddListItem} onDeleteItem={handleDeleteListItem} onActivity={handleListActivity} />;
             case 'chat':
-                return <ChatTab messages={messages} onSend={handleSendMessage} />;
+                return <ChatTab
+                    messages={messages}
+                    onSend={handleSendMessage}
+                    readReceipts={readReceipts}
+                    presence={presenceData}
+                    members={members}
+                    onMessagesViewed={handleMessagesViewed}
+                />;
             case 'ai':
-                return roomId ? <AIChatTab roomId={roomId} roomName={room?.name || ''} lists={allLists} events={events} documents={documents} recipes={recipes} /> : null;
+                return roomId ? <AIChatTab roomId={roomId} roomName={room?.name || ''} lists={allLists} events={events} documents={documents} recipes={recipes} members={members} /> : null;
             case 'recipes':
                 return roomId ? <RecipesTab roomId={roomId} recipes={recipes} onAskAI={handleAskAI} /> : null;
             case 'events':
@@ -352,14 +427,28 @@ export default function RoomPage() {
         <>
             <ToastContainer toasts={toasts} onDismiss={dismissToast} />
             {isMobile ? (
-                <MobileRoomView roomName={room.name} members={members} inviteCode={inviteCode} onGetInviteCode={handleGetInviteCode}>
+                <MobileRoomView roomName={room.name} members={members} inviteCode={inviteCode}
+                    onGetInviteCode={handleGetInviteCode}
+                    isOwner={isOwner}
+                    onLeaveRoom={handleLeaveRoom}
+                    onDeleteRoom={handleDeleteRoom}
+                    onRemoveMember={handleRemoveMember}
+                >
+                    <NotificationBanner />
                     <div className="pb-20">
                         {renderTabContent()}
                     </div>
                     {mobileBottomNav}
                 </MobileRoomView>
             ) : (
-                <RoomLayout roomTitle={room.name} inviteCode={inviteCode} members={members} onGetInviteCode={handleGetInviteCode} showInviteButton>
+                <RoomLayout roomTitle={room.name} inviteCode={inviteCode} members={members}
+                    onGetInviteCode={handleGetInviteCode} showInviteButton
+                    isOwner={isOwner}
+                    onLeaveRoom={handleLeaveRoom}
+                    onDeleteRoom={handleDeleteRoom}
+                    onRemoveMember={handleRemoveMember}
+                >
+                    <NotificationBanner />
                     {desktopTabBar}
                     {renderTabContent()}
                 </RoomLayout>

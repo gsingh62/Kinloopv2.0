@@ -1,15 +1,20 @@
-// components/ChatTab.tsx — Production-grade chat interface
+// components/ChatTab.tsx — Chat with read receipts and online presence
 import { useEffect, useRef, useState } from 'react';
 import EmojiPicker from 'emoji-picker-react';
 import { auth } from '../lib/firebase';
-import { Smile, Send, MessageCircle } from 'lucide-react';
+import { Smile, Send, MessageCircle, CheckCheck, Check } from 'lucide-react';
+import type { ReadReceipt, PresenceData } from '../lib/presenceUtils';
 
 interface ChatTabProps {
     messages: any[];
     onSend: (content: string) => void;
+    readReceipts?: ReadReceipt[];
+    presence?: PresenceData[];
+    members?: { uid: string; name?: string; email?: string }[];
+    onMessagesViewed?: (lastMessageId: string) => void;
 }
 
-export default function ChatTab({ messages, onSend }: ChatTabProps) {
+export default function ChatTab({ messages, onSend, readReceipts = [], presence = [], members = [], onMessagesViewed }: ChatTabProps) {
     const [newMessage, setNewMessage] = useState('');
     const [showEmojiPicker, setShowEmojiPicker] = useState(false);
     const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -21,7 +26,16 @@ export default function ChatTab({ messages, onSend }: ChatTabProps) {
         messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
     }, [messages]);
 
-    // Close emoji picker on outside click
+    // Mark messages as read when viewing
+    useEffect(() => {
+        if (messages.length > 0 && onMessagesViewed) {
+            const lastMsg = messages[messages.length - 1];
+            if (lastMsg?.id) {
+                onMessagesViewed(lastMsg.id);
+            }
+        }
+    }, [messages, onMessagesViewed]);
+
     useEffect(() => {
         const handler = (e: MouseEvent) => {
             if (emojiRef.current && !emojiRef.current.contains(e.target as Node)) {
@@ -41,21 +55,15 @@ export default function ChatTab({ messages, onSend }: ChatTabProps) {
         }
     };
 
-    // Group consecutive messages from same sender
     const groupedMessages = messages.reduce<any[]>((groups, msg, i) => {
         const prev = messages[i - 1];
         const isSameSender = prev && prev.senderId === msg.senderId;
-        // Within 2 minutes
         const isCloseInTime = prev && msg.createdAt?.toDate && prev.createdAt?.toDate &&
             (msg.createdAt.toDate().getTime() - prev.createdAt.toDate().getTime()) < 120000;
         if (isSameSender && isCloseInTime) {
             groups[groups.length - 1].messages.push(msg);
         } else {
-            groups.push({
-                senderId: msg.senderId,
-                senderEmail: msg.senderEmail,
-                messages: [msg],
-            });
+            groups.push({ senderId: msg.senderId, senderEmail: msg.senderEmail, messages: [msg] });
         }
         return groups;
     }, []);
@@ -68,33 +76,88 @@ export default function ChatTab({ messages, onSend }: ChatTabProps) {
         const yesterday = new Date(now);
         yesterday.setDate(yesterday.getDate() - 1);
         const isYesterday = date.toDateString() === yesterday.toDateString();
-
         const time = date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
         if (isToday) return time;
         if (isYesterday) return `Yesterday ${time}`;
         return `${date.toLocaleDateString([], { month: 'short', day: 'numeric' })} ${time}`;
     };
 
-    const getSenderName = (email: string) => {
-        if (!email) return 'Unknown';
-        return email.split('@')[0];
-    };
-
-    const getSenderInitial = (email: string) => {
-        return (email || 'U')[0].toUpperCase();
-    };
-
+    const getSenderName = (email: string) => email ? email.split('@')[0] : 'Unknown';
+    const getSenderInitial = (email: string) => (email || 'U')[0].toUpperCase();
     const getSenderColor = (senderId: string) => {
-        const colors = [
-            'bg-kin-500', 'bg-sage-400', 'bg-sand-400', 'bg-amber-500',
-            'bg-rose-400', 'bg-violet-400', 'bg-cyan-500', 'bg-pink-400',
-        ];
+        const colors = ['bg-kin-500', 'bg-sage-400', 'bg-sand-400', 'bg-amber-500', 'bg-rose-400', 'bg-violet-400', 'bg-cyan-500', 'bg-pink-400'];
         const hash = (senderId || '').split('').reduce((acc, c) => acc + c.charCodeAt(0), 0);
         return colors[hash % colors.length];
     };
 
+    // Compute who has seen each message
+    function getSeenBy(messageId: string): string[] {
+        return readReceipts
+            .filter(r => r.lastReadMessageId === messageId && r.uid !== currentUid)
+            .map(r => r.name);
+    }
+
+    // For the last message of each group from me, show seen status
+    function getMessageSeenStatus(messageId: string): 'sent' | 'seen' {
+        const seenByOthers = readReceipts.filter(r => r.uid !== currentUid);
+        // Check if any other user has read up to or past this message
+        const messageIdx = messages.findIndex(m => m.id === messageId);
+        const hasBeenSeen = seenByOthers.some(r => {
+            const theirIdx = messages.findIndex(m => m.id === r.lastReadMessageId);
+            return theirIdx >= messageIdx;
+        });
+        return hasBeenSeen ? 'seen' : 'sent';
+    }
+
+    // Find which messages are the "latest read" point for each user
+    function getSeenByAtMessage(messageId: string): string[] {
+        const names: string[] = [];
+        for (const r of readReceipts) {
+            if (r.uid === currentUid) continue;
+            if (r.lastReadMessageId === messageId) {
+                names.push(r.name);
+            }
+        }
+        return names;
+    }
+
+    // Online members
+    const onlineUids = new Set(presence.filter(p => p.isOnline).map(p => p.uid));
+
     return (
         <div className="flex flex-col h-[calc(100vh-220px)] max-w-3xl mx-auto">
+            {/* Online indicator bar */}
+            {members.length > 0 && (
+                <div className="flex items-center gap-2 px-3 py-2 border-b border-warmgray-100 bg-white/80">
+                    <div className="flex items-center -space-x-1.5">
+                        {members.filter(m => m.uid !== currentUid).slice(0, 6).map(m => {
+                            const isOnline = onlineUids.has(m.uid);
+                            const name = m.name || m.email?.split('@')[0] || '?';
+                            return (
+                                <div key={m.uid} className="relative" title={`${name} — ${isOnline ? 'Online' : 'Offline'}`}>
+                                    <div className={`w-7 h-7 rounded-full border-2 border-white flex items-center justify-center text-[10px] font-bold ${
+                                        isOnline ? 'bg-kin-100 text-kin-600' : 'bg-warmgray-100 text-warmgray-400'
+                                    }`}>
+                                        {name[0]?.toUpperCase()}
+                                    </div>
+                                    <div className={`absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2 border-white ${
+                                        isOnline ? 'bg-green-400' : 'bg-warmgray-300'
+                                    }`} />
+                                </div>
+                            );
+                        })}
+                    </div>
+                    <span className="text-[11px] text-warmgray-400">
+                        {(() => {
+                            const onlineOthers = members.filter(m => m.uid !== currentUid && onlineUids.has(m.uid));
+                            if (onlineOthers.length === 0) return 'No one else online';
+                            const names = onlineOthers.map(m => m.name || m.email?.split('@')[0]).join(', ');
+                            return `${names} online`;
+                        })()}
+                    </span>
+                </div>
+            )}
+
             {/* Messages Area */}
             <div className="flex-1 overflow-y-auto px-2 py-4 space-y-1">
                 {messages.length === 0 && (
@@ -109,19 +172,24 @@ export default function ChatTab({ messages, onSend }: ChatTabProps) {
 
                 {groupedMessages.map((group, gi) => {
                     const isMe = group.senderId === currentUid;
+                    const lastMsg = group.messages[group.messages.length - 1];
+                    const seenNames = lastMsg?.id ? getSeenByAtMessage(lastMsg.id) : [];
+                    const seenStatus = isMe && lastMsg?.id ? getMessageSeenStatus(lastMsg.id) : null;
+
                     return (
                         <div key={gi} className={`flex gap-2.5 mb-3 ${isMe ? 'flex-row-reverse' : ''}`}>
-                            {/* Avatar (only for others) */}
                             {!isMe && (
-                                <div className={`w-8 h-8 ${getSenderColor(group.senderId)} rounded-full flex items-center justify-center flex-shrink-0 mt-auto`}>
-                                    <span className="text-xs font-bold text-white">
-                                        {getSenderInitial(group.senderEmail)}
-                                    </span>
+                                <div className="relative flex-shrink-0 mt-auto">
+                                    <div className={`w-8 h-8 ${getSenderColor(group.senderId)} rounded-full flex items-center justify-center`}>
+                                        <span className="text-xs font-bold text-white">{getSenderInitial(group.senderEmail)}</span>
+                                    </div>
+                                    {onlineUids.has(group.senderId) && (
+                                        <div className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-green-400 border-2 border-white" />
+                                    )}
                                 </div>
                             )}
 
                             <div className={`flex flex-col ${isMe ? 'items-end' : 'items-start'} max-w-[75%]`}>
-                                {/* Sender name (only for others) */}
                                 {!isMe && (
                                     <span className="text-[11px] font-medium text-warmgray-400 mb-0.5 px-1">
                                         {getSenderName(group.senderEmail)}
@@ -149,11 +217,25 @@ export default function ChatTab({ messages, onSend }: ChatTabProps) {
                                     );
                                 })}
 
-                                {/* Timestamp on last message */}
-                                {group.messages.length > 0 && (
-                                    <span className={`text-[10px] text-warmgray-400 mt-1 px-1 ${isMe ? 'text-right' : ''}`}>
-                                        {formatTime(group.messages[group.messages.length - 1].createdAt)}
+                                {/* Timestamp + seen status */}
+                                <div className={`flex items-center gap-1 mt-1 px-1 ${isMe ? 'flex-row-reverse' : ''}`}>
+                                    <span className="text-[10px] text-warmgray-400">
+                                        {formatTime(lastMsg.createdAt)}
                                     </span>
+                                    {isMe && seenStatus && (
+                                        seenStatus === 'seen'
+                                            ? <CheckCheck size={13} className="text-blue-500" />
+                                            : <Check size={13} className="text-warmgray-400" />
+                                    )}
+                                </div>
+
+                                {/* Seen by names (under the last message in a group) */}
+                                {seenNames.length > 0 && (
+                                    <div className={`flex items-center gap-1 px-1 ${isMe ? 'flex-row-reverse' : ''}`}>
+                                        <span className="text-[9px] text-warmgray-400">
+                                            Seen by {seenNames.join(', ')}
+                                        </span>
+                                    </div>
                                 )}
                             </div>
                         </div>
@@ -164,7 +246,6 @@ export default function ChatTab({ messages, onSend }: ChatTabProps) {
 
             {/* Input Area */}
             <div className="relative border-t border-warmgray-100 bg-white pt-3 pb-1 px-1">
-                {/* Emoji Picker */}
                 {showEmojiPicker && (
                     <div ref={emojiRef} className="absolute bottom-full left-0 mb-2 z-30">
                         <EmojiPicker

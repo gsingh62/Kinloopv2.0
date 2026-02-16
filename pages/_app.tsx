@@ -15,6 +15,23 @@ function MyApp({ Component, pageProps }: AppProps) {
         }
     }, []);
 
+    // Subscribe to push notifications when a user is logged in
+    useEffect(() => {
+        let unsubscribe: (() => void) | undefined;
+        async function setup() {
+            const { auth } = await import('../lib/firebase');
+            const { onAuthStateChanged } = await import('firebase/auth');
+            const { subscribeToPush } = await import('../lib/pushUtils');
+            unsubscribe = onAuthStateChanged(auth, (user) => {
+                if (user) {
+                    subscribeToPush();
+                }
+            });
+        }
+        setup();
+        return () => { unsubscribe?.(); };
+    }, []);
+
     return (
         <ErrorBoundary>
             <Head>

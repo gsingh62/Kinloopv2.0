@@ -1,7 +1,60 @@
 // sw.js — KinLoop Service Worker
-// Provides offline caching and enables PWA installability
+// Provides offline caching, PWA installability, and push notifications
 
-const CACHE_NAME = 'kinloop-v1';
+const CACHE_NAME = 'kinloop-v2';
+
+// ─── Push Notifications ───
+self.addEventListener('push', (event) => {
+    if (!event.data) return;
+    let data;
+    try {
+        data = event.data.json();
+    } catch {
+        data = { title: 'KinLoop', body: event.data.text() };
+    }
+
+    const options = {
+        body: data.body || '',
+        icon: '/icons/icon-192.png',
+        badge: '/icons/icon-192.png',
+        tag: data.tag || 'kinloop-notification',
+        renotify: true,
+        data: {
+            url: data.url || '/',
+            roomId: data.roomId,
+        },
+        actions: data.actions || [],
+        vibrate: [200, 100, 200],
+    };
+
+    event.waitUntil(
+        self.registration.showNotification(data.title || 'KinLoop', options)
+    );
+});
+
+// Handle notification click — open the app or focus existing tab
+self.addEventListener('notificationclick', (event) => {
+    event.notification.close();
+
+    const urlToOpen = event.notification.data?.url || '/';
+
+    event.waitUntil(
+        self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clientList) => {
+            // Focus an existing tab if one is open
+            for (const client of clientList) {
+                if (client.url.includes(self.location.origin) && 'focus' in client) {
+                    client.focus();
+                    if (urlToOpen !== '/') {
+                        client.navigate(urlToOpen);
+                    }
+                    return;
+                }
+            }
+            // Otherwise open a new window
+            return self.clients.openWindow(urlToOpen);
+        })
+    );
+});
 
 // Pre-cache the app shell on install
 self.addEventListener('install', (event) => {

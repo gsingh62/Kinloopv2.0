@@ -1,7 +1,8 @@
-// components/MobileRoomView.tsx — Warm sunset themed mobile room view
+// components/MobileRoomView.tsx — Mobile room view with room management
 import React, { useState } from 'react';
 import { useRouter } from 'next/router';
-import { ArrowLeft, Share2, Users, Copy, Check, ChevronDown } from 'lucide-react';
+import { auth } from '../lib/firebase';
+import { ArrowLeft, Share2, Users, Copy, Check, ChevronDown, DoorOpen, Trash2, UserMinus } from 'lucide-react';
 
 interface MobileRoomViewProps {
     roomName: string;
@@ -9,13 +10,21 @@ interface MobileRoomViewProps {
     inviteCode?: string;
     children: React.ReactNode;
     onGetInviteCode?: () => void;
+    isOwner?: boolean;
+    onLeaveRoom?: () => void;
+    onDeleteRoom?: () => void;
+    onRemoveMember?: (uid: string) => void;
 }
 
-export default function MobileRoomView({ roomName, members, inviteCode, children, onGetInviteCode }: MobileRoomViewProps) {
+export default function MobileRoomView({
+    roomName, members, inviteCode, children, onGetInviteCode,
+    isOwner, onLeaveRoom, onDeleteRoom, onRemoveMember,
+}: MobileRoomViewProps) {
     const [view, setView] = useState<'main' | 'members'>('main');
     const [showInvite, setShowInvite] = useState(false);
     const [copied, setCopied] = useState(false);
     const router = useRouter();
+    const currentUser = auth.currentUser;
 
     const handleCopyCode = () => {
         if (inviteCode) {
@@ -85,8 +94,34 @@ export default function MobileRoomView({ roomName, members, inviteCode, children
                                         <p className="text-sm font-semibold text-warmgray-800 truncate">{member.name || member.email?.split('@')[0]}</p>
                                         <p className="text-xs text-warmgray-400 truncate">{member.email}</p>
                                     </div>
+                                    {member.uid === currentUser?.uid && (
+                                        <span className="text-[10px] text-kin-500 font-medium bg-kin-50 px-2 py-0.5 rounded-full">You</span>
+                                    )}
+                                    {isOwner && member.uid !== currentUser?.uid && onRemoveMember && (
+                                        <button onClick={() => onRemoveMember(member.uid)}
+                                            className="p-2 text-warmgray-300 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors"
+                                            title="Remove member">
+                                            <UserMinus size={16} />
+                                        </button>
+                                    )}
                                 </div>
                             ))}
+                        </div>
+
+                        {/* Room management actions */}
+                        <div className="mt-6 space-y-2">
+                            {onLeaveRoom && (
+                                <button onClick={onLeaveRoom}
+                                    className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-amber-50 border border-amber-200 rounded-xl text-sm font-medium text-amber-700 hover:bg-amber-100 transition-colors">
+                                    <DoorOpen size={16} /> Leave Room
+                                </button>
+                            )}
+                            {isOwner && onDeleteRoom && (
+                                <button onClick={onDeleteRoom}
+                                    className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-red-50 border border-red-200 rounded-xl text-sm font-medium text-red-600 hover:bg-red-100 transition-colors">
+                                    <Trash2 size={16} /> Delete Room
+                                </button>
+                            )}
                         </div>
                     </div>
                 </div>

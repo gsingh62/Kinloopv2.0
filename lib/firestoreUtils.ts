@@ -10,7 +10,10 @@ import {
     doc,
     deleteDoc,
     setDoc,
-    getDocs, updateDoc
+    getDocs,
+    updateDoc,
+    arrayRemove,
+    getDoc,
 } from 'firebase/firestore';
 
 export async function updateDocTitle(roomId: string, docId: string, title: string) {
@@ -267,4 +270,75 @@ export async function deleteListItemsByContent(roomId: string, listId: string, i
         await deleteDoc(doc(db, 'rooms', roomId, 'lists', listId, 'items', itemDoc.id));
     }
     return toDelete.length;
+}
+
+// ─── Room Management ───
+
+export async function leaveRoom(roomId: string, userId: string) {
+    const roomRef = doc(db, 'rooms', roomId);
+    await updateDoc(roomRef, { memberIds: arrayRemove(userId) });
+}
+
+export async function deleteRoom(roomId: string) {
+    // Delete sub-collections: lists (+ items), messages, documents, events, recipes, aiMessages
+    const subCollections = ['lists', 'messages', 'documents', 'events', 'recipes', 'aiMessages'];
+    for (const sub of subCollections) {
+        const snap = await getDocs(collection(db, 'rooms', roomId, sub));
+        for (const d of snap.docs) {
+            // For lists, also delete items sub-collection
+            if (sub === 'lists') {
+                const itemsSnap = await getDocs(collection(db, 'rooms', roomId, 'lists', d.id, 'items'));
+                for (const item of itemsSnap.docs) {
+                    await deleteDoc(doc(db, 'rooms', roomId, 'lists', d.id, 'items', item.id));
+                }
+            }
+            await deleteDoc(doc(db, 'rooms', roomId, sub, d.id));
+        }
+    }
+    await deleteDoc(doc(db, 'rooms', roomId));
+}
+
+export async function removeMember(roomId: string, userId: string) {
+    const roomRef = doc(db, 'rooms', roomId);
+    await updateDoc(roomRef, { memberIds: arrayRemove(userId) });
+}
+
+export async function getRoomOwner(roomId: string): Promise<string | null> {
+    const roomSnap = await getDoc(doc(db, 'rooms', roomId));
+    if (!roomSnap.exists()) return null;
+    const data = roomSnap.data();
+    return data?.createdBy || data?.memberIds?.[0] || null;
+}
+
+// ─── Chore board helpers ───
+
+export interface ChoreItem {
+    id: string;
+    content: string;
+    completed: boolean;
+    assignedTo?: string;
+    assignedToName?: string;
+    timeEstimate?: number; // minutes
+    createdAt?: any;
+    createdBy: string;
+}
+
+export async function assignChore(roomId: string, listId: string, itemId: string, userId: string, userName: string) {
+    await updateDoc(doc(db, 'rooms', roomId, 'lists', listId, 'items', itemId), {
+        assignedTo: userId,
+        assignedToName: userName,
+    });
+}
+
+export async function unassignChore(roomId: string, listId: string, itemId: string) {
+    await updateDoc(doc(db, 'rooms', roomId, 'lists', listId, 'items', itemId), {
+        assignedTo: '',
+        assignedToName: '',
+    });
+}
+
+export async function setChoreTimeEstimate(roomId: string, listId: string, itemId: string, minutes: number) {
+    await updateDoc(doc(db, 'rooms', roomId, 'lists', listId, 'items', itemId), {
+        timeEstimate: minutes,
+    });
 }

@@ -5,19 +5,23 @@ const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 const SYSTEM_PROMPT = `You are KinLoop AI, a warm and helpful family assistant built into the KinLoop app. You help family members manage their shared household by:
 
-- Managing lists (create, add items, delete items, delete entire lists)
+- Managing lists and chore boards (create, add items, delete items, delete entire lists, assign chores)
 - Managing documents (create, edit, delete)
 - Managing calendar events
 - Planning trips, days, outings, and ideas
 - Extracting recipes from URLs — saving them, creating shopping lists, scheduling cooking time
 - Helping choose from saved favorite recipes
+- Room management (leave room, remove members)
 
 PERSONALITY: You're friendly, concise, and practical — like a helpful family member. Use a warm tone but keep responses brief. Don't over-explain.
 
 TOOL USAGE RULES:
 - When the user wants to add items to a list, use add_items_to_list if they specify which list, or create_list if it's a new one.
+- When creating a list, you can set type to "choreboard" for a chore board or "list" for a traditional list.
 - When the user wants to remove items from a list, use delete_list_items.
 - When the user wants to delete an entire list, use delete_list.
+- When the user wants to assign a chore to someone, use assign_chore with the member's name.
+- When the user wants to add a chore to their calendar, use add_chore_to_calendar.
 - When the user shares a recipe URL, use fetch_recipe_from_url to extract the recipe. The result will contain "steps" (cooking instructions) and "ingredients". ALWAYS then call save_recipe with ALL the data — title, ingredients, steps, servings, prepTime, cookTime. The "steps" field from the fetch result maps directly to the "steps" parameter in save_recipe. Never omit steps. Then present the recipe nicely and offer to: (1) create a shopping list for ingredients, (2) schedule cooking time on the calendar.
 - When the user wants to see their saved/favorite recipes, use get_favorite_recipes.
 - When the user wants to plan cooking from favorites, help them pick a recipe, create a shopping list, and schedule it.
@@ -25,6 +29,8 @@ TOOL USAGE RULES:
 - When the user wants to plan something (trip, day, party, etc.), use create_document to save the plan.
 - When the user wants to edit a document, use modify_document.
 - When the user wants to delete a document, use delete_document.
+- When the user wants to leave a room, use leave_room. Confirm first.
+- When the user wants to remove a member, use remove_member. Only the room owner can do this.
 - If the user's request is ambiguous, ask a brief clarifying question instead of guessing.
 
 RECIPE PRESENTATION:
@@ -57,12 +63,13 @@ const tools: OpenAI.Chat.Completions.ChatCompletionTool[] = [
         type: 'function',
         function: {
             name: 'create_list',
-            description: 'Create a new list with optional initial items.',
+            description: 'Create a new list or chore board with optional initial items.',
             parameters: {
                 type: 'object',
                 properties: {
                     name: { type: 'string', description: 'Name for the new list' },
                     items: { type: 'array', items: { type: 'string' }, description: 'Optional initial items' },
+                    listType: { type: 'string', enum: ['list', 'choreboard'], description: 'Type of list: "list" for traditional, "choreboard" for chore board (default: list)' },
                 },
                 required: ['name'],
             },
@@ -235,6 +242,67 @@ const tools: OpenAI.Chat.Completions.ChatCompletionTool[] = [
             },
         },
     },
+    {
+        type: 'function',
+        function: {
+            name: 'assign_chore',
+            description: 'Assign a chore from a chore board to a specific room member.',
+            parameters: {
+                type: 'object',
+                properties: {
+                    listName: { type: 'string', description: 'Name of the chore board' },
+                    choreName: { type: 'string', description: 'Name/content of the chore to assign' },
+                    memberName: { type: 'string', description: 'Name or email prefix of the member to assign to' },
+                },
+                required: ['listName', 'choreName', 'memberName'],
+            },
+        },
+    },
+    {
+        type: 'function',
+        function: {
+            name: 'add_chore_to_calendar',
+            description: 'Add a chore to the calendar with a time estimate.',
+            parameters: {
+                type: 'object',
+                properties: {
+                    choreName: { type: 'string', description: 'Name of the chore' },
+                    date: { type: 'string', description: 'Date in YYYY-MM-DD format' },
+                    startTime: { type: 'string', description: 'Start time in HH:mm 24h format (optional)' },
+                    durationMinutes: { type: 'number', description: 'Estimated duration in minutes (default 30)' },
+                },
+                required: ['choreName', 'date'],
+            },
+        },
+    },
+    {
+        type: 'function',
+        function: {
+            name: 'leave_room',
+            description: 'Leave the current room. The current user will be removed from the room members.',
+            parameters: {
+                type: 'object',
+                properties: {
+                    confirm: { type: 'boolean', description: 'Must be true to confirm leaving' },
+                },
+                required: ['confirm'],
+            },
+        },
+    },
+    {
+        type: 'function',
+        function: {
+            name: 'remove_member',
+            description: 'Remove a member from the room. Only the room owner can do this.',
+            parameters: {
+                type: 'object',
+                properties: {
+                    memberName: { type: 'string', description: 'Name or email prefix of the member to remove' },
+                },
+                required: ['memberName'],
+            },
+        },
+    },
 ];
 
 function extractSteps(instructions: any): string[] {
@@ -370,6 +438,22 @@ function processToolCalls(toolCalls: OpenAI.Chat.Completions.ChatCompletionMessa
                 actions.push({ type: 'delete_recipe', ...args });
                 toolResults.push({ tool_call_id: tc.id, content: `Deleted recipe "${args.recipeTitle}"` });
                 break;
+            case 'assign_chore':
+                actions.push({ type: 'assign_chore', ...args });
+                toolResults.push({ tool_call_id: tc.id, content: `Assigned "${args.choreName}" to ${args.memberName}` });
+                break;
+            case 'add_chore_to_calendar':
+                actions.push({ type: 'add_chore_to_calendar', ...args });
+                toolResults.push({ tool_call_id: tc.id, content: `Added "${args.choreName}" to calendar on ${args.date}` });
+                break;
+            case 'leave_room':
+                actions.push({ type: 'leave_room', ...args });
+                toolResults.push({ tool_call_id: tc.id, content: args.confirm ? 'Left the room' : 'Leaving cancelled' });
+                break;
+            case 'remove_member':
+                actions.push({ type: 'remove_member', ...args });
+                toolResults.push({ tool_call_id: tc.id, content: `Removed ${args.memberName} from the room` });
+                break;
             default:
                 toolResults.push({ tool_call_id: tc.id, content: 'Unknown tool' });
         }
@@ -386,8 +470,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     if (!process.env.OPENAI_API_KEY) return res.status(500).json({ error: 'OpenAI API key not configured' });
 
     const contextNote = roomContext
-        ? `\n\nROOM CONTEXT:\n- Room: "${roomContext.roomName || 'Family Room'}"\n- Available lists: ${
-            roomContext.lists?.length ? roomContext.lists.map((l: any) => `"${l.name}" (id: ${l.id})`).join(', ') : 'none yet'
+        ? `\n\nROOM CONTEXT:\n- Room: "${roomContext.roomName || 'Family Room'}"\n- Members: ${
+            roomContext.members?.length ? roomContext.members.map((m: any) => `${m.name} (uid: ${m.uid})`).join(', ') : 'unknown'
+        }\n- Available lists: ${
+            roomContext.lists?.length ? roomContext.lists.map((l: any) => `"${l.name}" (id: ${l.id}, type: ${l.type || 'list'})`).join(', ') : 'none yet'
         }\n- Documents: ${
             roomContext.documents?.length ? roomContext.documents.map((d: any) => `"${d.title}" (id: ${d.id})`).join(', ') : 'none'
         }\n- Upcoming events: ${

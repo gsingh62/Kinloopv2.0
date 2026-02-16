@@ -46,7 +46,7 @@ export default function RoomsPage() {
         try {
             const inviteCode = nanoid(6).toUpperCase();
             const roomRef = await addDoc(collection(db, 'rooms'), {
-                name: roomName.trim(), createdAt: serverTimestamp(), memberIds: [u.uid], inviteCode,
+                name: roomName.trim(), createdAt: serverTimestamp(), createdBy: u.uid, memberIds: [u.uid], inviteCode,
             });
             setRoomName(''); setShowCreate(false);
             router.push(`/room/${roomRef.id}`);

@@ -8,21 +8,24 @@ import {
     deleteList as deleteListFn, deleteListItemsByContent,
     saveRecipe as saveRecipeFn, deleteRecipe as deleteRecipeFn,
     toggleRecipeFavorite, updateRecipeCompletedSteps,
+    leaveRoom, removeMember, assignChore,
     type Recipe,
 } from '../lib/firestoreUtils';
+import { useRouter } from 'next/router';
 import {
     Sparkles, Send, Loader2, ChefHat, ListPlus, CalendarPlus, FileText,
     AlertCircle, Trash2, PenLine, Heart, BookOpen, Clock, Users as UsersIcon,
-    CheckCircle2, Circle, Star,
+    CheckCircle2, Circle, Star, DoorOpen, UserMinus, ClipboardList, User,
 } from 'lucide-react';
 
 interface AIChatTabProps {
     roomId: string;
     roomName: string;
-    lists: { id: string; name: string }[];
+    lists: { id: string; name: string; type?: string }[];
     events: { id: string; title: string; date: string }[];
     documents: { id: string; title?: string; [key: string]: any }[];
     recipes: Recipe[];
+    members?: { uid: string; name?: string; email?: string }[];
 }
 
 interface AIMessage {
@@ -47,6 +50,10 @@ function ActionBadge({ action }: { action: any }) {
         toggle_recipe_favorite: { icon: Heart, color: 'pink', label: `Toggled favorite for "${action.recipeTitle}"` },
         delete_recipe: { icon: Trash2, color: 'red', label: `Deleted recipe "${action.recipeTitle}"` },
         get_favorite_recipes: { icon: BookOpen, color: 'violet', label: 'Loaded your recipes' },
+        assign_chore: { icon: User, color: 'violet', label: `Assigned "${action.choreName}" to ${action.memberName}` },
+        add_chore_to_calendar: { icon: CalendarPlus, color: 'sky', label: `Added "${action.choreName}" to calendar` },
+        leave_room: { icon: DoorOpen, color: 'amber', label: 'Left the room' },
+        remove_member: { icon: UserMinus, color: 'red', label: `Removed ${action.memberName}` },
     };
 
     const info = iconMap[action.type];
@@ -250,13 +257,14 @@ function RecipeCard({
 const SUGGESTION_CHIPS = [
     { icon: ChefHat, label: 'Extract a recipe', prompt: 'Can you extract the recipe from this URL? ' },
     { icon: ListPlus, label: 'Add to list', prompt: 'Add these items to my grocery list: ' },
+    { icon: ClipboardList, label: 'Create chore board', prompt: 'Create a chore board called ' },
     { icon: CalendarPlus, label: 'Add event', prompt: 'Add an event for ' },
     { icon: FileText, label: 'Plan something', prompt: 'Help me plan ' },
     { icon: Star, label: 'My recipes', prompt: 'Show me my saved recipes and help me pick what to cook' },
-    { icon: Trash2, label: 'Delete/edit', prompt: 'Delete ' },
 ];
 
-export default function AIChatTab({ roomId, roomName, lists, events, documents, recipes }: AIChatTabProps) {
+export default function AIChatTab({ roomId, roomName, lists, events, documents, recipes, members = [] }: AIChatTabProps) {
+    const router = useRouter();
     const [messages, setMessages] = useState<AIMessage[]>([]);
     const [input, setInput] = useState('');
     const [isLoading, setIsLoading] = useState(false);
@@ -294,6 +302,7 @@ export default function AIChatTab({ roomId, roomName, lists, events, documents, 
                     case 'create_list': {
                         const listRef = await addDoc(collection(db, 'rooms', roomId, 'lists'), {
                             name: action.name,
+                            type: action.listType || 'list',
                             createdAt: serverTimestamp(),
                         });
                         if (action.items?.length) {
@@ -421,6 +430,61 @@ export default function AIChatTab({ roomId, roomName, lists, events, documents, 
                         }
                         break;
                     }
+                    case 'assign_chore': {
+                        const matchedList = lists.find(l => l.name.toLowerCase() === action.listName.toLowerCase());
+                        if (matchedList) {
+                            const itemsSnap = await getDocs(collection(db, 'rooms', roomId, 'lists', matchedList.id, 'items'));
+                            const matchedItem = itemsSnap.docs.find(d => {
+                                const content = (d.data().content || '').toLowerCase();
+                                return content.includes(action.choreName.toLowerCase());
+                            });
+                            if (matchedItem) {
+                                const member = members.find(m => {
+                                    const mName = (m.name || m.email?.split('@')[0] || '').toLowerCase();
+                                    return mName.includes(action.memberName.toLowerCase());
+                                });
+                                if (member) {
+                                    await assignChore(roomId, matchedList.id, matchedItem.id,
+                                        member.uid, member.name || member.email?.split('@')[0] || '');
+                                }
+                            }
+                        }
+                        break;
+                    }
+                    case 'add_chore_to_calendar': {
+                        const duration = action.durationMinutes || 30;
+                        const startTime = action.startTime || '10:00';
+                        const [h, m] = startTime.split(':').map(Number);
+                        const endMinutes = h * 60 + m + duration;
+                        const endTime = `${Math.floor(endMinutes / 60)}:${String(endMinutes % 60).padStart(2, '0')}`;
+                        await addCalendarEvent(roomId, {
+                            title: `🧹 ${action.choreName}`,
+                            date: action.date,
+                            startTime,
+                            endTime,
+                            allDay: false,
+                            color: '#F59E0B',
+                            createdBy: user.uid,
+                        });
+                        break;
+                    }
+                    case 'leave_room': {
+                        if (action.confirm) {
+                            await leaveRoom(roomId, user.uid);
+                            router.push('/dashboard');
+                        }
+                        break;
+                    }
+                    case 'remove_member': {
+                        const member = members.find(m => {
+                            const mName = (m.name || m.email?.split('@')[0] || '').toLowerCase();
+                            return mName.includes(action.memberName.toLowerCase());
+                        });
+                        if (member) {
+                            await removeMember(roomId, member.uid);
+                        }
+                        break;
+                    }
                 }
             } catch (err) {
                 console.error(`Failed to execute action ${action.type}:`, err);
@@ -467,7 +531,8 @@ export default function AIChatTab({ roomId, roomName, lists, events, documents, 
                     messages: apiMessages,
                     roomContext: {
                         roomName,
-                        lists: lists.map(l => ({ id: l.id, name: l.name })),
+                        members: members.map(m => ({ uid: m.uid, name: m.name || m.email?.split('@')[0] || 'Unknown' })),
+                        lists: lists.map(l => ({ id: l.id, name: l.name, type: l.type || 'list' })),
                         events: events.slice(0, 10).map(e => ({ title: e.title, date: e.date })),
                         documents: documents.map(d => ({ id: d.id, title: d.title || 'Untitled' })),
                         recipes: recipes.map(r => ({

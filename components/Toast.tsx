@@ -191,19 +191,26 @@ export async function sendBrowserNotification(title: string, body: string, tag?:
 
 // ─── Enable Notifications Banner ───
 export function NotificationBanner() {
-    const [mode, setMode] = useState<'hidden' | 'enable' | 'granted'>('hidden');
+    const [mode, setMode] = useState<'hidden' | 'unsupported' | 'denied' | 'enable' | 'granted'>('hidden');
     const [enabling, setEnabling] = useState(false);
     const [testing, setTesting] = useState(false);
     const [testResult, setTestResult] = useState<string | null>(null);
     const [refreshing, setRefreshing] = useState(false);
+    const [dismissed, setDismissed] = useState(false);
 
     useEffect(() => {
         if (typeof window === 'undefined') return;
-        if (!('Notification' in window) || !('serviceWorker' in navigator)) return;
-        if (Notification.permission === 'default') {
+        if (!('Notification' in window) || !('serviceWorker' in navigator) || !('PushManager' in window)) {
+            setMode('unsupported');
+            return;
+        }
+        const perm = Notification.permission;
+        if (perm === 'default') {
             setMode('enable');
-        } else if (Notification.permission === 'granted') {
+        } else if (perm === 'granted') {
             setMode('granted');
+        } else {
+            setMode('denied');
         }
     }, []);
 
@@ -293,8 +300,39 @@ export function NotificationBanner() {
         }
     };
 
-    if (mode === 'hidden') return null;
+    if (mode === 'hidden' || dismissed) return null;
 
+    // Unsupported browser
+    if (mode === 'unsupported') {
+        return (
+            <div className="mx-auto max-w-3xl mb-3">
+                <div className="flex items-center gap-2 px-3 py-2 bg-amber-50 border border-amber-200 rounded-xl text-xs">
+                    <Bell size={14} className="text-amber-500 flex-shrink-0" />
+                    <span className="text-amber-700">Push notifications are not supported in this browser. Use Chrome on Android or Safari on iPhone for notifications.</span>
+                    <button onClick={() => setDismissed(true)} className="p-0.5 text-warmgray-300 hover:text-warmgray-500 flex-shrink-0">
+                        <X size={14} />
+                    </button>
+                </div>
+            </div>
+        );
+    }
+
+    // Permission denied
+    if (mode === 'denied') {
+        return (
+            <div className="mx-auto max-w-3xl mb-3">
+                <div className="flex items-center gap-2 px-3 py-2 bg-red-50 border border-red-200 rounded-xl text-xs">
+                    <Bell size={14} className="text-red-400 flex-shrink-0" />
+                    <span className="text-red-700">Notifications are blocked. Go to your browser settings to allow notifications for this site, then reload.</span>
+                    <button onClick={() => setDismissed(true)} className="p-0.5 text-warmgray-300 hover:text-warmgray-500 flex-shrink-0">
+                        <X size={14} />
+                    </button>
+                </div>
+            </div>
+        );
+    }
+
+    // Permission not yet requested
     if (mode === 'enable') {
         return (
             <div className="mx-auto max-w-3xl mb-4 animate-slide-in">
@@ -307,7 +345,7 @@ export function NotificationBanner() {
                         <p className="text-xs text-warmgray-500">Get notified even when the app is closed.</p>
                     </div>
                     <div className="flex items-center gap-2 flex-shrink-0">
-                        <button onClick={() => setMode('hidden')} className="text-xs text-warmgray-400 hover:text-warmgray-600 px-2 py-1.5">Later</button>
+                        <button onClick={() => setDismissed(true)} className="text-xs text-warmgray-400 hover:text-warmgray-600 px-2 py-1.5">Later</button>
                         <button onClick={handleEnable} disabled={enabling}
                             className="px-4 py-2 bg-gradient-to-r from-kin-500 to-kin-600 text-white rounded-lg text-xs font-semibold hover:from-kin-600 hover:to-kin-700 disabled:opacity-50 transition-all shadow-sm">
                             {enabling ? 'Enabling...' : 'Enable'}
@@ -333,7 +371,7 @@ export function NotificationBanner() {
                     className="px-2.5 py-1 bg-kin-100 hover:bg-kin-200 text-kin-700 rounded-md transition-colors disabled:opacity-50">
                     {testing ? 'Sending...' : 'Test'}
                 </button>
-                <button onClick={() => setMode('hidden')} className="p-0.5 text-warmgray-300 hover:text-warmgray-500">
+                <button onClick={() => setDismissed(true)} className="p-0.5 text-warmgray-300 hover:text-warmgray-500">
                     <X size={14} />
                 </button>
             </div>

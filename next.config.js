@@ -12,7 +12,6 @@ module.exports = {
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-    output: 'export', // ✅ required for static export
     reactStrictMode: true,
     // add any other configs if needed
 };

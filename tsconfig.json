@@ -2,7 +2,7 @@
   "compilerOptions": {
     "target": "ES2020",
     "module": "NodeNext", // previously ESNext
-    "jsx": "preserve",
+    "jsx": "react-jsx",
     "moduleResolution": "NodeNext", // previously node
     "strict": true,
     "esModuleInterop": true,

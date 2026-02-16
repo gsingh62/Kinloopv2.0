@@ -74,6 +74,9 @@ node_modules/
 .next/
 out/
 
+# Vercel
+.vercel/
+
 # Capacitor
 android/
 ios/

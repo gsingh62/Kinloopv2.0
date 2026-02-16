@@ -36,13 +36,15 @@
     "lodash.debounce": "^4.0.8",
     "lucide-react": "^0.525.0",
     "nanoid": "^5.1.5",
-    "next": "latest",
+    "next": "^16.1.6",
+    "openai": "^6.22.0",
     "react": "^18.2.0",
     "react-dnd": "^14.0.5",
     "react-dnd-html5-backend": "^14.0.0",
     "react-dom": "^18.2.0",
     "react-responsive": "^10.0.1",
-    "ts-node": "^10.9.2"
+    "ts-node": "^10.9.2",
+    "web-push": "^3.6.7"
   },
   "devDependencies": {
     "@types/lodash.debounce": "^4.0.9",

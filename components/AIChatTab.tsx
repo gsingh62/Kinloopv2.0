@@ -271,6 +271,7 @@ export default function AIChatTab({ roomId, roomName, lists, events, documents, 
     const [error, setError] = useState<string | null>(null);
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const inputRef = useRef<HTMLInputElement>(null);
+    const isInitialLoad = useRef(true);
 
     useEffect(() => {
         if (!roomId) return;
@@ -289,7 +290,12 @@ export default function AIChatTab({ roomId, roomName, lists, events, documents, 
     }, [roomId]);
 
     useEffect(() => {
-        messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+        if (isInitialLoad.current) {
+            messagesEndRef.current?.scrollIntoView({ behavior: 'instant' as ScrollBehavior });
+            if (messages.length > 0) isInitialLoad.current = false;
+        } else {
+            messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+        }
     }, [messages, isLoading]);
 
     async function executeActions(actions: any[]) {

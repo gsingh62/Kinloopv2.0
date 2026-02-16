@@ -18,12 +18,21 @@ export default function ChatTab({ messages, onSend, readReceipts = [], presence 
     const [newMessage, setNewMessage] = useState('');
     const [showEmojiPicker, setShowEmojiPicker] = useState(false);
     const messagesEndRef = useRef<HTMLDivElement>(null);
+    const messagesContainerRef = useRef<HTMLDivElement>(null);
     const emojiRef = useRef<HTMLDivElement>(null);
     const inputRef = useRef<HTMLInputElement>(null);
     const currentUid = auth.currentUser?.uid;
+    const isInitialLoad = useRef(true);
 
     useEffect(() => {
-        messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+        if (isInitialLoad.current) {
+            // First load: jump to bottom instantly (no visible scroll)
+            messagesEndRef.current?.scrollIntoView({ behavior: 'instant' as ScrollBehavior });
+            if (messages.length > 0) isInitialLoad.current = false;
+        } else {
+            // New messages: smooth scroll
+            messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+        }
     }, [messages]);
 
     // Mark messages as read when viewing

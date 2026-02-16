@@ -28,7 +28,7 @@ import PhotoTab from '../../components/PhotoTab';
 import AIChatTab from '../../components/AIChatTab';
 import RecipesTab from '../../components/RecipesTab';
 import RoomLayout from '../../components/RoomLayout';
-import { ToastContainer, useToast, sendBrowserNotification, NotificationBanner } from '../../components/Toast';
+import { ToastContainer, useToast, NotificationBanner } from '../../components/Toast';
 import { nanoid } from 'nanoid';
 import DocsList from "../../components/DocsList";
 import MobileRoomView from '../../components/MobileRoomView';
@@ -156,7 +156,8 @@ export default function RoomPage() {
                             if (activeTabRef.current !== 'chat') {
                                 setTabBadges(b => ({ ...b, chat: b.chat + 1 }));
                             }
-                            sendBrowserNotification(`${senderName} in KinLoop`, preview);
+                            // Push notifications handle the background/closed case via /api/push
+                            // No sendBrowserNotification here to avoid duplicate system notifications
                         }
                     }
                 }
@@ -299,7 +300,7 @@ export default function RoomPage() {
             });
             setTabBadges(b => ({ ...b, lists: b.lists + 1 }));
         }
-        sendBrowserNotification('KinLoop - List updated', activity.detail);
+        // Push notifications handle background/closed via /api/push in ListTab
     }, [addToast, handleTabSwitch]);
 
     // Navigate to AI tab with a pre-filled prompt from other tabs

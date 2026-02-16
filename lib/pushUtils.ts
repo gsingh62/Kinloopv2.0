@@ -13,7 +13,6 @@ function urlBase64ToUint8Array(base64String: string): Uint8Array {
 }
 
 export function subscribeToPush(): void {
-    // Fire-and-forget — never blocks navigation or rendering
     setTimeout(async () => {
         try {
             if (typeof window === 'undefined') return;
@@ -21,18 +20,43 @@ export function subscribeToPush(): void {
             if (!('Notification' in window)) return;
             if (!VAPID_PUBLIC_KEY) return;
 
-            // Only proceed if permission is already granted.
-            // If 'default', request it — but if denied, bail out.
             let permission = Notification.permission;
             if (permission === 'default') {
                 permission = await Notification.requestPermission();
             }
             if (permission !== 'granted') return;
 
-            const registration = await navigator.serviceWorker.ready;
+            const registration = await Promise.race([
+                navigator.serviceWorker.ready,
+                new Promise<never>((_, reject) =>
+                    setTimeout(() => reject(new Error('SW ready timeout')), 10000)
+                ),
+            ]);
 
-            // Check for existing subscription
+            // Send the user ID to the service worker so it can handle
+            // subscription changes even when the app is closed
+            const user = auth.currentUser;
+            if (user) {
+                registration.active?.postMessage({
+                    type: 'SET_USER_ID',
+                    userId: user.uid,
+                });
+            }
+
             let subscription = await registration.pushManager.getSubscription();
+
+            if (subscription) {
+                try {
+                    const subJson = subscription.toJSON();
+                    if (!subJson.endpoint || !subJson.keys?.p256dh || !subJson.keys?.auth) {
+                        await subscription.unsubscribe();
+                        subscription = null;
+                    }
+                } catch {
+                    subscription = null;
+                }
+            }
+
             if (!subscription) {
                 subscription = await registration.pushManager.subscribe({
                     userVisibleOnly: true,
@@ -40,11 +64,20 @@ export function subscribeToPush(): void {
                 });
             }
 
+            // Always save — ensures Firestore has the current subscription
             await savePushSubscription(subscription);
+
+            // Listen for subscription changes from the SW
+            navigator.serviceWorker.addEventListener('message', async (event) => {
+                if (event.data?.type === 'PUSH_SUBSCRIPTION_CHANGED') {
+                    const newSub = await registration.pushManager.getSubscription();
+                    if (newSub) await savePushSubscription(newSub);
+                }
+            });
         } catch (err) {
             console.error('Push subscription failed (non-fatal):', err);
         }
-    }, 2000); // Delay 2s so it never races with page load
+    }, 2000);
 }
 
 async function savePushSubscription(subscription: PushSubscription) {
@@ -60,6 +93,7 @@ async function savePushSubscription(subscription: PushSubscription) {
             userId: user.uid,
             email: user.email || '',
             subscription: subData,
+            userAgent: navigator.userAgent || '',
             createdAt: serverTimestamp(),
             updatedAt: serverTimestamp(),
         });
@@ -89,10 +123,6 @@ export async function unsubscribeFromPush() {
     }
 }
 
-/**
- * Send a push notification to all members of a room (except the sender).
- * Calls the /api/push server route which handles the actual web-push sending.
- */
 export async function notifyRoomMembers(
     roomId: string,
     senderUid: string,
@@ -107,6 +137,6 @@ export async function notifyRoomMembers(
             body: JSON.stringify({ roomId, senderUid, title, body, url }),
         });
     } catch {
-        // Push notification is best-effort, don't block the UI
+        // Best-effort
     }
 }

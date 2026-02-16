@@ -9,9 +9,7 @@ function MyApp({ Component, pageProps }: AppProps) {
     // Register service worker for PWA
     useEffect(() => {
         if ('serviceWorker' in navigator) {
-            navigator.serviceWorker.register('/sw.js').catch(() => {
-                // Service worker registration failed — not critical
-            });
+            navigator.serviceWorker.register('/sw.js').catch(() => {});
         }
     }, []);
 
@@ -27,6 +25,18 @@ function MyApp({ Component, pageProps }: AppProps) {
                     subscribeToPush();
                 }
             });
+
+            // Re-subscribe when app regains focus (important for Android)
+            const handleVisibilityChange = async () => {
+                if (document.visibilityState === 'visible' && auth.currentUser) {
+                    const { subscribeToPush: resubscribe } = await import('../lib/pushUtils');
+                    resubscribe();
+                }
+            };
+            document.addEventListener('visibilitychange', handleVisibilityChange);
+            return () => {
+                document.removeEventListener('visibilitychange', handleVisibilityChange);
+            };
         }
         setup();
         return () => { unsubscribe?.(); };

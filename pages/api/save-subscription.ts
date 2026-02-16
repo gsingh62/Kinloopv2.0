@@ -16,7 +16,7 @@ const adminDb = admin.firestore();
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
     if (req.method !== 'POST') return res.status(405).end();
 
-    const { userId, subscription, oldEndpoint } = req.body;
+    const { userId, subscription, oldEndpoint, email, userAgent } = req.body;
 
     if (!userId || !subscription?.endpoint || !subscription?.keys) {
         return res.status(400).json({ error: 'userId and subscription required' });
@@ -32,7 +32,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         // Save the new subscription
         await adminDb.collection('pushSubscriptions').doc(`${userId}_${subId}`).set({
             userId,
+            email: email || '',
             subscription,
+            userAgent: userAgent || '',
             updatedAt: admin.firestore.FieldValue.serverTimestamp(),
             createdAt: admin.firestore.FieldValue.serverTimestamp(),
         });

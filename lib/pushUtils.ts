@@ -1,5 +1,4 @@
-import { db, auth } from './firebase';
-import { doc, setDoc, deleteDoc, serverTimestamp } from 'firebase/firestore';
+import { auth } from './firebase';
 
 const VAPID_PUBLIC_KEY = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY || '';
 
@@ -10,6 +9,27 @@ function urlBase64ToUint8Array(base64String: string): Uint8Array {
     const arr = new Uint8Array(raw.length);
     for (let i = 0; i < raw.length; i++) arr[i] = raw.charCodeAt(i);
     return arr;
+}
+
+/**
+ * Save push subscription via server API (bypasses Firestore security rules).
+ */
+async function savePushSubscriptionViaAPI(subscription: PushSubscription, userId: string, email: string): Promise<void> {
+    const subData = subscription.toJSON();
+    const resp = await fetch('/api/save-subscription', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            userId,
+            email,
+            subscription: subData,
+            userAgent: navigator.userAgent || '',
+        }),
+    });
+    if (!resp.ok) {
+        const err = await resp.json().catch(() => ({ error: 'unknown' }));
+        throw new Error(err.error || `HTTP ${resp.status}`);
+    }
 }
 
 export function subscribeToPush(): void {
@@ -33,14 +53,9 @@ export function subscribeToPush(): void {
                 ),
             ]);
 
-            // Send the user ID to the service worker so it can handle
-            // subscription changes even when the app is closed
             const user = auth.currentUser;
-            if (user) {
-                registration.active?.postMessage({
-                    type: 'SET_USER_ID',
-                    userId: user.uid,
-                });
+            if (user && registration.active) {
+                registration.active.postMessage({ type: 'SET_USER_ID', userId: user.uid });
             }
 
             let subscription = await registration.pushManager.getSubscription();
@@ -64,42 +79,22 @@ export function subscribeToPush(): void {
                 });
             }
 
-            // Always save — ensures Firestore has the current subscription
-            await savePushSubscription(subscription);
+            if (user) {
+                await savePushSubscriptionViaAPI(subscription, user.uid, user.email || '');
+            }
 
-            // Listen for subscription changes from the SW
             navigator.serviceWorker.addEventListener('message', async (event) => {
                 if (event.data?.type === 'PUSH_SUBSCRIPTION_CHANGED') {
                     const newSub = await registration.pushManager.getSubscription();
-                    if (newSub) await savePushSubscription(newSub);
+                    if (newSub && user) {
+                        await savePushSubscriptionViaAPI(newSub, user.uid, user.email || '');
+                    }
                 }
             });
         } catch (err) {
             console.error('Push subscription failed (non-fatal):', err);
         }
     }, 2000);
-}
-
-async function savePushSubscription(subscription: PushSubscription) {
-    try {
-        const user = auth.currentUser;
-        if (!user) return;
-
-        const subData = subscription.toJSON();
-        if (!subData.endpoint) return;
-        const subId = btoa(subData.endpoint).replace(/[^a-zA-Z0-9]/g, '').slice(0, 40);
-
-        await setDoc(doc(db, 'pushSubscriptions', `${user.uid}_${subId}`), {
-            userId: user.uid,
-            email: user.email || '',
-            subscription: subData,
-            userAgent: navigator.userAgent || '',
-            createdAt: serverTimestamp(),
-            updatedAt: serverTimestamp(),
-        });
-    } catch (err) {
-        console.error('Failed to save push subscription (non-fatal):', err);
-    }
 }
 
 /**
@@ -161,19 +156,10 @@ export async function subscribeToPushWithStatus(): Promise<string> {
         const subData = subscription.toJSON();
         if (!subData.endpoint) return 'error: subscription has no endpoint';
 
-        const subId = btoa(subData.endpoint).replace(/[^a-zA-Z0-9]/g, '').slice(0, 40);
-
         try {
-            await setDoc(doc(db, 'pushSubscriptions', `${user.uid}_${subId}`), {
-                userId: user.uid,
-                email: user.email || '',
-                subscription: subData,
-                userAgent: navigator.userAgent || '',
-                createdAt: serverTimestamp(),
-                updatedAt: serverTimestamp(),
-            });
+            await savePushSubscriptionViaAPI(subscription, user.uid, user.email || '');
         } catch (err: any) {
-            return `error: Firestore save failed — ${err.message || err}`;
+            return `error: save failed — ${err.message || err}`;
         }
 
         const endpoint = subData.endpoint || '';
@@ -192,12 +178,6 @@ export async function unsubscribeFromPush() {
         const registration = await navigator.serviceWorker.ready;
         const subscription = await registration.pushManager.getSubscription();
         if (subscription) {
-            const user = auth.currentUser;
-            if (user) {
-                const subData = subscription.toJSON();
-                const subId = btoa(subData.endpoint || '').replace(/[^a-zA-Z0-9]/g, '').slice(0, 40);
-                await deleteDoc(doc(db, 'pushSubscriptions', `${user.uid}_${subId}`));
-            }
             await subscription.unsubscribe();
         }
     } catch (err) {

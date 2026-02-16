@@ -189,3 +189,82 @@ export function subscribeToMessages(roomId: string, callback: (messages: any[]) 
         callback(messages);
     });
 }
+
+// ─── Recipe helpers ───
+
+export interface Recipe {
+    id: string;
+    title: string;
+    url?: string;
+    ingredients: string[];
+    steps: string[];
+    servings?: string;
+    prepTime?: string;
+    cookTime?: string;
+    isFavorite: boolean;
+    createdAt?: any;
+    createdBy: string;
+    completedSteps?: number[];
+}
+
+export async function saveRecipe(roomId: string, recipe: Omit<Recipe, 'id' | 'createdAt'>) {
+    const ref = await addDoc(collection(db, 'rooms', roomId, 'recipes'), {
+        ...recipe,
+        createdAt: serverTimestamp(),
+    });
+    return ref.id;
+}
+
+export function subscribeToRecipes(roomId: string, callback: (recipes: Recipe[]) => void) {
+    const q = query(collection(db, 'rooms', roomId, 'recipes'), orderBy('createdAt', 'desc'));
+    return onSnapshot(q, (snapshot) => {
+        callback(snapshot.docs.map(d => ({ id: d.id, ...d.data() } as Recipe)));
+    });
+}
+
+export async function deleteRecipe(roomId: string, recipeId: string) {
+    await deleteDoc(doc(db, 'rooms', roomId, 'recipes', recipeId));
+}
+
+export async function toggleRecipeFavorite(roomId: string, recipeId: string, currentFav: boolean) {
+    await updateDoc(doc(db, 'rooms', roomId, 'recipes', recipeId), { isFavorite: !currentFav });
+}
+
+export async function updateRecipeCompletedSteps(roomId: string, recipeId: string, completedSteps: number[]) {
+    await updateDoc(doc(db, 'rooms', roomId, 'recipes', recipeId), { completedSteps });
+}
+
+export async function deleteDocument(roomId: string, docId: string) {
+    await deleteDoc(doc(db, 'rooms', roomId, 'documents', docId));
+}
+
+export async function updateDocContent(roomId: string, docId: string, content: string, title?: string) {
+    const updates: any = { content, updatedAt: serverTimestamp() };
+    if (title) updates.title = title;
+    await updateDoc(doc(db, 'rooms', roomId, 'documents', docId), updates);
+}
+
+export async function deleteList(roomId: string, listId: string) {
+    // Delete all items first
+    const itemsRef = collection(db, 'rooms', roomId, 'lists', listId, 'items');
+    const itemsSnap = await getDocs(itemsRef);
+    for (const itemDoc of itemsSnap.docs) {
+        await deleteDoc(doc(db, 'rooms', roomId, 'lists', listId, 'items', itemDoc.id));
+    }
+    // Delete the list
+    await deleteDoc(doc(db, 'rooms', roomId, 'lists', listId));
+}
+
+export async function deleteListItemsByContent(roomId: string, listId: string, itemNames: string[]) {
+    const itemsRef = collection(db, 'rooms', roomId, 'lists', listId, 'items');
+    const itemsSnap = await getDocs(itemsRef);
+    const lowerNames = itemNames.map(n => n.toLowerCase());
+    const toDelete = itemsSnap.docs.filter(d => {
+        const content = (d.data().content || '').toLowerCase();
+        return lowerNames.some(n => content.includes(n));
+    });
+    for (const itemDoc of toDelete) {
+        await deleteDoc(doc(db, 'rooms', roomId, 'lists', listId, 'items', itemDoc.id));
+    }
+    return toDelete.length;
+}

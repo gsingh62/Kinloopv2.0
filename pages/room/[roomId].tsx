@@ -1,6 +1,6 @@
 // pages/room/[roomId].tsx
 import { useRouter } from 'next/router';
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef, useCallback } from 'react';
 import { doc, getDoc, updateDoc, arrayUnion, collection, getDocs, onSnapshot } from 'firebase/firestore';
 import { db, auth } from '../../lib/firebase';
 import {
@@ -13,19 +13,24 @@ import {
     getEvents,
     deleteEvent,
     saveDoc,
-    subscribeToDoc
+    subscribeToDoc,
+    subscribeToRecipes,
+    type Recipe,
 } from '../../lib/firestoreUtils';
 import ChatTab from '../../components/ChatTab';
 import ListTab from '../../components/ListTab';
 import DocTab from '../../components/DocTab';
 import EventTab from '../../components/EventTab';
 import PhotoTab from '../../components/PhotoTab';
+import AIChatTab from '../../components/AIChatTab';
+import RecipesTab from '../../components/RecipesTab';
 import RoomLayout from '../../components/RoomLayout';
+import { ToastContainer, useToast, sendBrowserNotification } from '../../components/Toast';
 import { nanoid } from 'nanoid';
 import DocsList from "../../components/DocsList";
 import MobileRoomView from '../../components/MobileRoomView';
 import {useIsMobileDevice} from "../../utils/isMobileDevice";
-import { Calendar, CheckSquare, MessageCircle, FileText, Image } from 'lucide-react';
+import { Calendar, CheckSquare, MessageCircle, FileText, Image, Sparkles, ChefHat } from 'lucide-react';
 
 export default function RoomPage() {
     const router = useRouter();
@@ -41,7 +46,20 @@ export default function RoomPage() {
     const [documents, setDocuments] = useState<any[]>([]);
     const isMobile = useIsMobileDevice();
 
+    // ─── Notification state ───
+    const { toasts, addToast, dismissToast } = useToast();
+    const [tabBadges, setTabBadges] = useState<Record<string, number>>({ chat: 0, lists: 0 });
+    const msgCountRef = useRef<number | null>(null);
+    const activeTabRef = useRef(activeTab);
+    activeTabRef.current = activeTab;
+
     const roomId = typeof router.query.roomId === 'string' ? router.query.roomId : null;
+
+    // Clear badge when switching to a tab (must be before useEffects that reference it)
+    const handleTabSwitch = useCallback((tabId: string) => {
+        setActiveTab(tabId);
+        setTabBadges(b => ({ ...b, [tabId]: 0 }));
+    }, []);
 
     useEffect(() => {
         if (!roomId) return;
@@ -107,9 +125,39 @@ export default function RoomPage() {
 
     useEffect(() => {
         if (!roomId) return;
-        const unsubscribe = subscribeToMessages(roomId, setMessages);
+        const unsubscribe = subscribeToMessages(roomId, (newMessages) => {
+            setMessages(prev => {
+                const currentUid = auth.currentUser?.uid;
+                if (msgCountRef.current !== null && newMessages.length > msgCountRef.current) {
+                    const newOnes = newMessages.slice(msgCountRef.current);
+                    for (const msg of newOnes) {
+                        if (msg.senderId && msg.senderId !== currentUid) {
+                            const senderName = msg.senderEmail?.split('@')[0] || 'Someone';
+                            const preview = msg.content?.length > 50 ? msg.content.slice(0, 50) + '...' : msg.content;
+
+                            // Always show popup toast for messages from others
+                            addToast({
+                                type: 'chat',
+                                title: `${senderName} sent a message`,
+                                body: preview,
+                                action: activeTabRef.current !== 'chat'
+                                    ? { label: 'View', onClick: () => handleTabSwitch('chat') }
+                                    : undefined,
+                            });
+
+                            if (activeTabRef.current !== 'chat') {
+                                setTabBadges(b => ({ ...b, chat: b.chat + 1 }));
+                            }
+                            sendBrowserNotification(`${senderName} in KinLoop`, preview);
+                        }
+                    }
+                }
+                msgCountRef.current = newMessages.length;
+                return newMessages;
+            });
+        });
         return () => unsubscribe();
-    }, [roomId]);
+    }, [roomId, addToast, handleTabSwitch]);
 
     useEffect(() => {
         if (!roomId) return;
@@ -141,6 +189,10 @@ export default function RoomPage() {
         const user = auth.currentUser;
         if (!user) return;
         await sendMessage(roomId, content, user.uid, user.email || '');
+        // Send push notification to other room members
+        const senderName = user.email?.split('@')[0] || 'Someone';
+        const preview = content.length > 80 ? content.slice(0, 80) + '...' : content;
+        import('../../lib/pushUtils').then(m => m.notifyRoomMembers(roomId as string, user!.uid, `${senderName} in ${room?.name || 'KinLoop'}`, preview, `/room/${roomId}`));
     };
 
     const handleGetInviteCode = () => {
@@ -151,12 +203,54 @@ export default function RoomPage() {
         }
     };
 
+    // Build a lightweight list summary for the AI context
+    const [allLists, setAllLists] = useState<{id: string; name: string}[]>([]);
+    const [recipes, setRecipes] = useState<Recipe[]>([]);
+    useEffect(() => {
+        if (!roomId) return;
+        const unsub = onSnapshot(collection(db, 'rooms', roomId, 'lists'), (snap) => {
+            setAllLists(snap.docs.map(d => ({ id: d.id, name: (d.data() as any).name || 'Untitled' })));
+        });
+        return () => unsub();
+    }, [roomId]);
+
+    useEffect(() => {
+        if (!roomId) return;
+        const unsub = subscribeToRecipes(roomId, setRecipes);
+        return () => unsub();
+    }, [roomId]);
+
+    // List activity notification callback
+    const handleListActivity = useCallback((activity: { type: string; detail: string }) => {
+        if (activeTabRef.current !== 'lists') {
+            addToast({
+                type: 'list',
+                title: 'List updated',
+                body: activity.detail,
+                action: { label: 'View', onClick: () => handleTabSwitch('lists') },
+            });
+            setTabBadges(b => ({ ...b, lists: b.lists + 1 }));
+        }
+        sendBrowserNotification('KinLoop - List updated', activity.detail);
+    }, [addToast, handleTabSwitch]);
+
+    // Navigate to AI tab with a pre-filled prompt from other tabs
+    const [pendingAIPrompt, setPendingAIPrompt] = useState<string | null>(null);
+    const handleAskAI = useCallback((prompt: string) => {
+        setPendingAIPrompt(prompt);
+        handleTabSwitch('ai');
+    }, [handleTabSwitch]);
+
     const renderTabContent = () => {
         switch (activeTab) {
             case 'lists':
-                return <ListTab roomId={roomId} onAddItem={handleAddListItem} onDeleteItem={handleDeleteListItem} />;
+                return <ListTab roomId={roomId} roomName={room?.name} onAddItem={handleAddListItem} onDeleteItem={handleDeleteListItem} onActivity={handleListActivity} />;
             case 'chat':
                 return <ChatTab messages={messages} onSend={handleSendMessage} />;
+            case 'ai':
+                return roomId ? <AIChatTab roomId={roomId} roomName={room?.name || ''} lists={allLists} events={events} documents={documents} recipes={recipes} /> : null;
+            case 'recipes':
+                return roomId ? <RecipesTab roomId={roomId} recipes={recipes} onAskAI={handleAskAI} /> : null;
             case 'events':
                 return roomId ? <EventTab roomId={roomId} members={members} /> : null;
             case 'docs':
@@ -178,6 +272,8 @@ export default function RoomPage() {
         { id: 'lists', label: 'Lists', icon: CheckSquare },
         { id: 'events', label: 'Calendar', icon: Calendar },
         { id: 'chat', label: 'Chat', icon: MessageCircle },
+        { id: 'ai', label: 'AI', icon: Sparkles },
+        { id: 'recipes', label: 'Recipes', icon: ChefHat },
         { id: 'docs', label: 'Docs', icon: FileText },
         { id: 'photos', label: 'Photos', icon: Image },
     ];
@@ -188,11 +284,12 @@ export default function RoomPage() {
             {tabs.map(tab => {
                 const Icon = tab.icon;
                 const isActive = activeTab === tab.id;
+                const badge = tabBadges[tab.id] || 0;
                 return (
                     <button
                         key={tab.id}
-                        onClick={() => setActiveTab(tab.id)}
-                        className={`flex-1 flex items-center justify-center gap-1.5 px-3 py-2.5 rounded-lg text-sm font-medium transition-all ${
+                        onClick={() => handleTabSwitch(tab.id)}
+                        className={`relative flex-1 flex items-center justify-center gap-1.5 px-3 py-2.5 rounded-lg text-sm font-medium transition-all ${
                             isActive
                                 ? 'bg-white text-kin-600 shadow-sm'
                                 : 'text-warmgray-500 hover:text-warmgray-700'
@@ -200,6 +297,11 @@ export default function RoomPage() {
                     >
                         <Icon size={16} />
                         <span>{tab.label}</span>
+                        {badge > 0 && !isActive && (
+                            <span className="absolute -top-0.5 right-1 min-w-[18px] h-[18px] bg-kin-500 text-white text-[10px] font-bold rounded-full flex items-center justify-center px-1">
+                                {badge > 9 ? '9+' : badge}
+                            </span>
+                        )}
                     </button>
                 );
             })}
@@ -213,17 +315,25 @@ export default function RoomPage() {
                 {tabs.map(tab => {
                     const Icon = tab.icon;
                     const isActive = activeTab === tab.id;
+                    const badge = tabBadges[tab.id] || 0;
                     return (
                         <button
                             key={tab.id}
-                            onClick={() => setActiveTab(tab.id)}
-                            className={`flex flex-col items-center justify-center py-1.5 px-2 min-w-[52px] rounded-lg transition-all ${
+                            onClick={() => handleTabSwitch(tab.id)}
+                            className={`relative flex flex-col items-center justify-center py-1.5 px-2 min-w-[52px] rounded-lg transition-all ${
                                 isActive
                                     ? 'text-kin-600'
                                     : 'text-warmgray-400'
                             }`}
                         >
-                            <Icon size={20} strokeWidth={isActive ? 2.5 : 2} />
+                            <div className="relative">
+                                <Icon size={20} strokeWidth={isActive ? 2.5 : 2} />
+                                {badge > 0 && !isActive && (
+                                    <span className="absolute -top-1.5 -right-2 min-w-[16px] h-[16px] bg-kin-500 text-white text-[9px] font-bold rounded-full flex items-center justify-center px-0.5">
+                                        {badge > 9 ? '9+' : badge}
+                                    </span>
+                                )}
+                            </div>
                             <span className={`text-[10px] mt-0.5 ${isActive ? 'font-semibold' : 'font-medium'}`}>
                                 {tab.label}
                             </span>
@@ -238,18 +348,22 @@ export default function RoomPage() {
     );
 
     // ─── Render ───
-    return isMobile ? (
-        <MobileRoomView roomName={room.name} members={members} inviteCode={inviteCode} onGetInviteCode={handleGetInviteCode}>
-            {/* Content area — add bottom padding for the fixed nav */}
-            <div className="pb-20">
-                {renderTabContent()}
-            </div>
-            {mobileBottomNav}
-        </MobileRoomView>
-    ) : (
-        <RoomLayout roomTitle={room.name} inviteCode={inviteCode} members={members} onGetInviteCode={handleGetInviteCode} showInviteButton>
-            {desktopTabBar}
-            {renderTabContent()}
-        </RoomLayout>
+    return (
+        <>
+            <ToastContainer toasts={toasts} onDismiss={dismissToast} />
+            {isMobile ? (
+                <MobileRoomView roomName={room.name} members={members} inviteCode={inviteCode} onGetInviteCode={handleGetInviteCode}>
+                    <div className="pb-20">
+                        {renderTabContent()}
+                    </div>
+                    {mobileBottomNav}
+                </MobileRoomView>
+            ) : (
+                <RoomLayout roomTitle={room.name} inviteCode={inviteCode} members={members} onGetInviteCode={handleGetInviteCode} showInviteButton>
+                    {desktopTabBar}
+                    {renderTabContent()}
+                </RoomLayout>
+            )}
+        </>
     );
 }

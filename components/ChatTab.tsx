@@ -1,8 +1,7 @@
 // components/ChatTab.tsx — Chat with attachments, read receipts and online presence
 import { useEffect, useRef, useState } from 'react';
 import EmojiPicker from 'emoji-picker-react';
-import { auth, storage } from '../lib/firebase';
-import { ref, uploadBytesResumable, getDownloadURL } from 'firebase/storage';
+import { auth } from '../lib/firebase';
 import { Smile, Send, MessageCircle, CheckCheck, Check, Paperclip, Image as ImageIcon, FileText, X, Loader2, Download } from 'lucide-react';
 import type { ReadReceipt, PresenceData } from '../lib/presenceUtils';
 import type { MessageAttachment } from '../lib/firestoreUtils';
@@ -29,6 +28,7 @@ export default function ChatTab({ messages, onSend, readReceipts = [], presence 
     const [pendingFiles, setPendingFiles] = useState<PendingFile[]>([]);
     const [uploading, setUploading] = useState(false);
     const [uploadProgress, setUploadProgress] = useState(0);
+    const [uploadError, setUploadError] = useState<string | null>(null);
     const [lightboxUrl, setLightboxUrl] = useState<string | null>(null);
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const emojiRef = useRef<HTMLDivElement>(null);
@@ -84,29 +84,33 @@ export default function ChatTab({ messages, onSend, readReceipts = [], presence 
     };
 
     const uploadFile = async (file: File): Promise<MessageAttachment> => {
-        const timestamp = Date.now();
-        const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_');
-        const storagePath = `rooms/${roomId}/chat/${timestamp}_${safeName}`;
-        const storageRef = ref(storage, storagePath);
+        if (!roomId) throw new Error('Room ID is missing');
+        if (!auth.currentUser) throw new Error('Please sign in first');
 
-        return new Promise((resolve, reject) => {
-            const uploadTask = uploadBytesResumable(storageRef, file);
-            uploadTask.on('state_changed',
-                (snap) => setUploadProgress(Math.round((snap.bytesTransferred / snap.totalBytes) * 100)),
-                (err) => reject(err),
-                async () => {
-                    const url = await getDownloadURL(uploadTask.snapshot.ref);
-                    resolve({
-                        type: file.type.startsWith('image/') ? 'image' : 'file',
-                        url,
-                        name: file.name,
-                        size: file.size,
-                        mimeType: file.type,
-                        storagePath,
-                    });
-                }
-            );
-        });
+        const formData = new FormData();
+        formData.append('file', file);
+        formData.append('roomId', roomId);
+
+        setUploadProgress(10);
+        const response = await fetch('/api/upload', { method: 'POST', body: formData });
+        setUploadProgress(80);
+
+        if (!response.ok) {
+            const data = await response.json().catch(() => ({}));
+            throw new Error(data.error || `Upload failed (${response.status})`);
+        }
+
+        const data = await response.json();
+        setUploadProgress(100);
+
+        return {
+            type: data.type,
+            url: data.url,
+            name: data.name,
+            size: data.size,
+            mimeType: data.mimeType,
+            storagePath: data.storagePath,
+        };
     };
 
     const handleSend = async () => {
@@ -117,6 +121,7 @@ export default function ChatTab({ messages, onSend, readReceipts = [], presence 
         if (hasFiles) {
             setUploading(true);
             setUploadProgress(0);
+            setUploadError(null);
             try {
                 const attachments: MessageAttachment[] = [];
                 for (const pf of pendingFiles) {
@@ -126,8 +131,9 @@ export default function ChatTab({ messages, onSend, readReceipts = [], presence 
                 onSend(newMessage.trim() || '', attachments);
                 pendingFiles.forEach(pf => { if (pf.previewUrl) URL.revokeObjectURL(pf.previewUrl); });
                 setPendingFiles([]);
-            } catch (err) {
+            } catch (err: any) {
                 console.error('Upload failed:', err);
+                setUploadError(err.message || 'Upload failed. Check Firebase Storage rules.');
             } finally {
                 setUploading(false);
                 setUploadProgress(0);
@@ -384,6 +390,12 @@ export default function ChatTab({ messages, onSend, readReceipts = [], presence 
                                 <div className="h-full bg-kin-500 rounded-full transition-all" style={{ width: `${uploadProgress}%` }} />
                             </div>
                             <p className="text-[10px] text-warmgray-400 mt-0.5">Uploading... {uploadProgress}%</p>
+                        </div>
+                    )}
+                    {uploadError && (
+                        <div className="mt-2 px-3 py-2 bg-red-50 border border-red-200 rounded-lg flex items-center justify-between">
+                            <p className="text-[11px] text-red-600">{uploadError}</p>
+                            <button onClick={() => setUploadError(null)} className="text-red-400 hover:text-red-600 ml-2"><X size={12} /></button>
                         </div>
                     )}
                 </div>

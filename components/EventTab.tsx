@@ -4,12 +4,18 @@ import { auth } from '../lib/firebase';
 import {
     CalendarEvent,
     CalendarEventInput,
+    EventParticipant,
+    EventVisibility,
+    canUserSeeEvent,
     subscribeToEvents,
     addCalendarEvent,
     updateCalendarEvent,
     deleteEvent,
 } from '../lib/firestoreUtils';
-import { ChevronLeft, ChevronRight, Plus, X, Clock, Trash2, Edit3, Users, Calendar } from 'lucide-react';
+import {
+    ChevronLeft, ChevronRight, Plus, X, Clock, Trash2, Edit3, Users, Calendar,
+    Eye, EyeOff, Lock, Globe, UserCheck, Mail, Check, ChevronDown,
+} from 'lucide-react';
 
 // ─── Color Palette for events ───
 const EVENT_COLORS = [
@@ -74,6 +80,14 @@ interface EventFormProps {
     onClose: () => void;
 }
 
+// ─── Visibility Options ───
+const VISIBILITY_OPTIONS: { value: EventVisibility; label: string; icon: typeof Globe; desc: string }[] = [
+    { value: 'everyone', label: 'Everyone', icon: Globe, desc: 'All room members can see' },
+    { value: 'participants', label: 'Participants only', icon: UserCheck, desc: 'Only people added as participants' },
+    { value: 'private', label: 'Only me', icon: Lock, desc: 'Only you can see this event' },
+    { value: 'custom', label: 'Custom', icon: Eye, desc: 'Choose who can see' },
+];
+
 function EventFormModal({ initialDate, event, members, onSave, onDelete, onClose }: EventFormProps) {
     const [title, setTitle] = useState(event?.title || '');
     const [date, setDate] = useState(event?.date || initialDate || '');
@@ -82,12 +96,48 @@ function EventFormModal({ initialDate, event, members, onSave, onDelete, onClose
     const [endTime, setEndTime] = useState(event?.endTime || '10:00');
     const [description, setDescription] = useState(event?.description || '');
     const [color, setColor] = useState(event?.color || EVENT_COLORS[0].value);
-    const [assignedTo, setAssignedTo] = useState<string[]>(event?.assignedTo || []);
 
-    const toggleAssigned = (uid: string) => {
-        setAssignedTo(prev =>
-            prev.includes(uid) ? prev.filter(id => id !== uid) : [...prev, uid]
-        );
+    // Participants — initialize from existing participants or legacy assignedTo
+    const initParticipants = (): EventParticipant[] => {
+        if (event?.participants?.length) return event.participants;
+        if (event?.assignedTo?.length) {
+            return event.assignedTo.map(uid => {
+                const m = members.find(mb => mb.uid === uid);
+                return { uid, email: m?.email || '', name: m?.name || m?.email?.split('@')[0] || 'User' };
+            });
+        }
+        return [];
+    };
+    const [participants, setParticipants] = useState<EventParticipant[]>(initParticipants);
+    const [externalEmail, setExternalEmail] = useState('');
+
+    // Visibility
+    const [visibility, setVisibility] = useState<EventVisibility>(event?.visibility || 'everyone');
+    const [visibleTo, setVisibleTo] = useState<string[]>(event?.visibleTo || []);
+    const [showVisDropdown, setShowVisDropdown] = useState(false);
+
+    const toggleParticipant = (member: { uid: string; name?: string; email: string }) => {
+        setParticipants(prev => {
+            const exists = prev.some(p => p.uid === member.uid);
+            if (exists) return prev.filter(p => p.uid !== member.uid);
+            return [...prev, { uid: member.uid, email: member.email, name: member.name || member.email?.split('@')[0] || 'User', rsvp: 'needsAction' }];
+        });
+    };
+
+    const addExternalParticipant = () => {
+        const email = externalEmail.trim().toLowerCase();
+        if (!email || !email.includes('@')) return;
+        if (participants.some(p => p.email === email)) return;
+        setParticipants(prev => [...prev, { email, name: email.split('@')[0], rsvp: 'needsAction' }]);
+        setExternalEmail('');
+    };
+
+    const removeParticipant = (email: string) => {
+        setParticipants(prev => prev.filter(p => p.email !== email));
+    };
+
+    const toggleVisibleTo = (uid: string) => {
+        setVisibleTo(prev => prev.includes(uid) ? prev.filter(id => id !== uid) : [...prev, uid]);
     };
 
     const handleSubmit = (e: React.FormEvent) => {
@@ -95,7 +145,8 @@ function EventFormModal({ initialDate, event, members, onSave, onDelete, onClose
         if (!title.trim() || !date) return;
         const user = auth.currentUser;
         if (!user) return;
-        onSave({
+
+        const eventData: CalendarEventInput = {
             title: title.trim(),
             date,
             allDay,
@@ -103,10 +154,17 @@ function EventFormModal({ initialDate, event, members, onSave, onDelete, onClose
             endTime: allDay ? undefined : endTime,
             description: description.trim() || undefined,
             color,
-            assignedTo: assignedTo.length > 0 ? assignedTo : undefined,
             createdBy: event?.createdBy || user.uid,
-        });
+            participants: participants.length > 0 ? participants : undefined,
+            assignedTo: participants.length > 0 ? participants.filter(p => p.uid).map(p => p.uid!) : undefined,
+            visibility,
+            visibleTo: visibility === 'custom' && visibleTo.length > 0 ? visibleTo : undefined,
+        };
+
+        onSave(eventData);
     };
+
+    const selectedVis = VISIBILITY_OPTIONS.find(v => v.value === visibility)!;
 
     return (
         <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/40 backdrop-blur-sm"
@@ -213,35 +271,140 @@ function EventFormModal({ initialDate, event, members, onSave, onDelete, onClose
                         </div>
                     </div>
 
-                    {/* Assign Members */}
+                    {/* ─── Participants ─── */}
                     {members.length > 0 && (
                         <div>
                             <div className="flex items-center gap-2 mb-2">
                                 <Users size={16} className="text-warmgray-400" />
-                                <p className="text-sm font-medium text-warmgray-700">Assign to</p>
+                                <p className="text-sm font-medium text-warmgray-700">Participants</p>
                             </div>
-                            <div className="flex gap-2 flex-wrap">
+                            {/* Room members */}
+                            <div className="flex gap-2 flex-wrap mb-2">
                                 {members.map(m => {
-                                    const selected = assignedTo.includes(m.uid);
+                                    const selected = participants.some(p => p.uid === m.uid);
                                     const displayName = m.name || m.email?.split('@')[0] || 'User';
                                     return (
                                         <button
                                             key={m.uid}
                                             type="button"
-                                            onClick={() => toggleAssigned(m.uid)}
-                                            className={`px-3 py-1.5 rounded-full text-xs font-medium transition-all ${
+                                            onClick={() => toggleParticipant(m)}
+                                            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium transition-all ${
                                                 selected
                                                     ? 'bg-kin-100 text-kin-700 ring-1 ring-kin-300'
                                                     : 'bg-warmgray-100 text-warmgray-600 hover:bg-warmgray-200'
                                             }`}
                                         >
+                                            {selected && <Check size={12} />}
                                             {displayName}
                                         </button>
                                     );
                                 })}
                             </div>
+                            {/* External email input */}
+                            <div className="flex gap-2">
+                                <div className="flex-1 flex items-center gap-2 px-3 py-2 border border-warmgray-200 rounded-xl text-sm focus-within:ring-2 focus-within:ring-kin-500 focus-within:border-transparent">
+                                    <Mail size={14} className="text-warmgray-400 flex-shrink-0" />
+                                    <input
+                                        type="email"
+                                        value={externalEmail}
+                                        onChange={e => setExternalEmail(e.target.value)}
+                                        placeholder="Add external email..."
+                                        className="flex-1 border-0 p-0 text-sm focus:ring-0 placeholder-warmgray-400"
+                                        onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); addExternalParticipant(); } }}
+                                    />
+                                </div>
+                                <button
+                                    type="button"
+                                    onClick={addExternalParticipant}
+                                    className="px-3 py-2 bg-warmgray-100 text-warmgray-600 rounded-xl text-xs font-medium hover:bg-warmgray-200 transition-colors"
+                                >
+                                    Add
+                                </button>
+                            </div>
+                            {/* External participants list */}
+                            {participants.filter(p => !p.uid).length > 0 && (
+                                <div className="flex gap-2 flex-wrap mt-2">
+                                    {participants.filter(p => !p.uid).map(p => (
+                                        <div
+                                            key={p.email}
+                                            className="flex items-center gap-1.5 px-3 py-1.5 bg-violet-50 text-violet-700 rounded-full text-xs font-medium"
+                                        >
+                                            <Mail size={12} />
+                                            {p.email}
+                                            <button type="button" onClick={() => removeParticipant(p.email)} className="ml-0.5 hover:text-red-500">
+                                                <X size={12} />
+                                            </button>
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
                         </div>
                     )}
+
+                    {/* ─── Visibility ─── */}
+                    <div>
+                        <div className="flex items-center gap-2 mb-2">
+                            <Eye size={16} className="text-warmgray-400" />
+                            <p className="text-sm font-medium text-warmgray-700">Who can see this?</p>
+                        </div>
+                        <div className="relative">
+                            <button
+                                type="button"
+                                onClick={() => setShowVisDropdown(!showVisDropdown)}
+                                className="w-full flex items-center justify-between px-3 py-2.5 border border-warmgray-200 rounded-xl text-sm hover:border-warmgray-300 transition-colors"
+                            >
+                                <div className="flex items-center gap-2">
+                                    <selectedVis.icon size={16} className="text-warmgray-500" />
+                                    <span className="text-warmgray-800 font-medium">{selectedVis.label}</span>
+                                    <span className="text-warmgray-400 text-xs">— {selectedVis.desc}</span>
+                                </div>
+                                <ChevronDown size={16} className={`text-warmgray-400 transition-transform ${showVisDropdown ? 'rotate-180' : ''}`} />
+                            </button>
+                            {showVisDropdown && (
+                                <div className="absolute z-10 w-full mt-1 bg-white border border-warmgray-200 rounded-xl shadow-lg overflow-hidden">
+                                    {VISIBILITY_OPTIONS.map(opt => (
+                                        <button
+                                            key={opt.value}
+                                            type="button"
+                                            onClick={() => { setVisibility(opt.value); setShowVisDropdown(false); }}
+                                            className={`w-full flex items-center gap-3 px-3 py-2.5 text-left hover:bg-warmgray-50 transition-colors ${visibility === opt.value ? 'bg-kin-50' : ''}`}
+                                        >
+                                            <opt.icon size={16} className={visibility === opt.value ? 'text-kin-500' : 'text-warmgray-400'} />
+                                            <div>
+                                                <p className={`text-sm font-medium ${visibility === opt.value ? 'text-kin-700' : 'text-warmgray-800'}`}>{opt.label}</p>
+                                                <p className="text-xs text-warmgray-400">{opt.desc}</p>
+                                            </div>
+                                            {visibility === opt.value && <Check size={16} className="ml-auto text-kin-500" />}
+                                        </button>
+                                    ))}
+                                </div>
+                            )}
+                        </div>
+                        {/* Custom visibility — member picker */}
+                        {visibility === 'custom' && members.length > 0 && (
+                            <div className="flex gap-2 flex-wrap mt-2 pl-1">
+                                {members.map(m => {
+                                    const selected = visibleTo.includes(m.uid);
+                                    const displayName = m.name || m.email?.split('@')[0] || 'User';
+                                    return (
+                                        <button
+                                            key={m.uid}
+                                            type="button"
+                                            onClick={() => toggleVisibleTo(m.uid)}
+                                            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium transition-all ${
+                                                selected
+                                                    ? 'bg-kin-100 text-kin-700 ring-1 ring-kin-300'
+                                                    : 'bg-warmgray-100 text-warmgray-600 hover:bg-warmgray-200'
+                                            }`}
+                                        >
+                                            {selected ? <Eye size={12} /> : <EyeOff size={12} />}
+                                            {displayName}
+                                        </button>
+                                    );
+                                })}
+                            </div>
+                        )}
+                    </div>
 
                     {/* Actions */}
                     <div className="flex items-center gap-3 pt-2">
@@ -277,8 +440,23 @@ interface EventDetailProps {
     onClose: () => void;
 }
 
+const RSVP_LABELS: Record<string, { label: string; color: string }> = {
+    accepted: { label: 'Accepted', color: 'text-green-600' },
+    declined: { label: 'Declined', color: 'text-red-500' },
+    tentative: { label: 'Maybe', color: 'text-amber-600' },
+    needsAction: { label: 'Pending', color: 'text-warmgray-400' },
+};
+
 function EventDetailSheet({ event, members, onEdit, onDelete, onClose }: EventDetailProps) {
-    const assignedMembers = members.filter(m => event.assignedTo?.includes(m.uid));
+    // Combine participants and legacy assignedTo
+    const eventParticipants: EventParticipant[] = event.participants?.length
+        ? event.participants
+        : (event.assignedTo || []).map(uid => {
+            const m = members.find(mb => mb.uid === uid);
+            return { uid, email: m?.email || '', name: m?.name || m?.email?.split('@')[0] || 'User' };
+        });
+
+    const visLabel = VISIBILITY_OPTIONS.find(v => v.value === (event.visibility || 'everyone'));
 
     return (
         <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/40 backdrop-blur-sm"
@@ -319,24 +497,50 @@ function EventDetailSheet({ event, members, onEdit, onDelete, onClose }: EventDe
                         <p className="text-sm text-warmgray-700 mt-3 leading-relaxed">{event.description}</p>
                     )}
 
-                    {assignedMembers.length > 0 && (
+                    {/* Participants */}
+                    {eventParticipants.length > 0 && (
                         <div className="mt-4">
-                            <p className="text-xs text-warmgray-400 uppercase tracking-wide mb-2">Assigned to</p>
-                            <div className="flex gap-2 flex-wrap">
-                                {assignedMembers.map(m => (
-                                    <div key={m.uid} className="flex items-center gap-2 bg-warmgray-50 rounded-full px-3 py-1.5">
-                                        <div
-                                            className="w-6 h-6 rounded-full flex items-center justify-center text-white text-xs font-bold"
-                                            style={{ backgroundColor: event.color }}
-                                        >
-                                            {(m.name || m.email)?.[0]?.toUpperCase()}
+                            <p className="text-xs text-warmgray-400 uppercase tracking-wide mb-2">Participants</p>
+                            <div className="space-y-1.5">
+                                {eventParticipants.map((p, i) => {
+                                    const rsvp = RSVP_LABELS[p.rsvp || 'needsAction'];
+                                    return (
+                                        <div key={p.email || i} className="flex items-center gap-2.5 bg-warmgray-50 rounded-xl px-3 py-2">
+                                            <div
+                                                className="w-7 h-7 rounded-full flex items-center justify-center text-white text-xs font-bold flex-shrink-0"
+                                                style={{ backgroundColor: event.color }}
+                                            >
+                                                {(p.name || p.email)?.[0]?.toUpperCase()}
+                                            </div>
+                                            <div className="flex-1 min-w-0">
+                                                <p className="text-xs font-medium text-warmgray-800 truncate">
+                                                    {p.name || p.email?.split('@')[0]}
+                                                </p>
+                                                {!p.uid && (
+                                                    <p className="text-[10px] text-warmgray-400 truncate">{p.email}</p>
+                                                )}
+                                            </div>
+                                            <span className={`text-[10px] font-medium ${rsvp.color}`}>{rsvp.label}</span>
                                         </div>
-                                        <span className="text-xs text-warmgray-700 font-medium">
-                                            {m.name || m.email?.split('@')[0]}
-                                        </span>
-                                    </div>
-                                ))}
+                                    );
+                                })}
                             </div>
+                        </div>
+                    )}
+
+                    {/* Visibility badge */}
+                    {event.visibility && event.visibility !== 'everyone' && visLabel && (
+                        <div className="mt-3 flex items-center gap-1.5 text-xs text-warmgray-500">
+                            <visLabel.icon size={13} />
+                            <span>{visLabel.desc}</span>
+                        </div>
+                    )}
+
+                    {/* Source badge */}
+                    {event.source === 'google' && (
+                        <div className="mt-2 inline-flex items-center gap-1.5 px-2.5 py-1 bg-blue-50 text-blue-600 rounded-full text-xs font-medium">
+                            <svg viewBox="0 0 24 24" className="w-3.5 h-3.5" fill="currentColor"><path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 0 1-2.2 3.32v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.1z"/><path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/><path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/><path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/></svg>
+                            Google Calendar
                         </div>
                     )}
 
@@ -372,12 +576,20 @@ export default function EventTab({ roomId, members = [] }: EventTabProps) {
     const [viewingEvent, setViewingEvent] = useState<CalendarEvent | null>(null);
     const [view, setView] = useState<'month' | 'agenda'>('month');
 
+    const currentUserId = auth.currentUser?.uid || '';
+
     // Subscribe to events
     useEffect(() => {
         if (!roomId) return;
         const unsub = subscribeToEvents(roomId, setEvents);
         return () => unsub();
     }, [roomId]);
+
+    // Filter events by visibility for current user
+    const visibleEvents = useMemo(() => {
+        if (!currentUserId) return events;
+        return events.filter(ev => canUserSeeEvent(ev, currentUserId));
+    }, [events, currentUserId]);
 
     // Navigation
     const goToPrevMonth = () => {
@@ -434,10 +646,10 @@ export default function EventTab({ roomId, members = [] }: EventTabProps) {
         return days;
     }, [currentYear, currentMonth]);
 
-    // Group events by date
+    // Group visible events by date
     const eventsByDate = useMemo(() => {
         const map: Record<string, CalendarEvent[]> = {};
-        events.forEach(ev => {
+        visibleEvents.forEach(ev => {
             if (!map[ev.date]) map[ev.date] = [];
             map[ev.date].push(ev);
         });
@@ -450,7 +662,7 @@ export default function EventTab({ roomId, members = [] }: EventTabProps) {
             })
         );
         return map;
-    }, [events]);
+    }, [visibleEvents]);
 
     // Events for selected date in agenda/day view
     const selectedDateEvents = selectedDate ? (eventsByDate[selectedDate] || []) : [];
@@ -458,10 +670,10 @@ export default function EventTab({ roomId, members = [] }: EventTabProps) {
     // Upcoming events for agenda view
     const upcomingEvents = useMemo(() => {
         const todayStr = formatDate(today.getFullYear(), today.getMonth(), today.getDate());
-        return events
+        return visibleEvents
             .filter(ev => ev.date >= todayStr)
             .sort((a, b) => a.date.localeCompare(b.date) || (a.startTime || '').localeCompare(b.startTime || ''));
-    }, [events]);
+    }, [visibleEvents]);
 
     // Handlers
     const handleSaveEvent = async (eventData: CalendarEventInput) => {
@@ -706,22 +918,34 @@ export default function EventTab({ roomId, members = [] }: EventTabProps) {
                                                         {ev.allDay ? 'All day' : `${formatTime12(ev.startTime || '')}${ev.endTime ? ` – ${formatTime12(ev.endTime)}` : ''}`}
                                                     </p>
                                                 </div>
-                                                {ev.assignedTo && ev.assignedTo.length > 0 && (
-                                                    <div className="flex -space-x-1">
-                                                        {ev.assignedTo.slice(0, 3).map(uid => {
+                                                {(() => {
+                                                    const pList = ev.participants?.length
+                                                        ? ev.participants
+                                                        : (ev.assignedTo || []).map(uid => {
                                                             const m = members.find(mb => mb.uid === uid);
-                                                            return (
+                                                            return { uid, email: m?.email || '', name: m?.name };
+                                                        });
+                                                    if (!pList.length) return null;
+                                                    return (
+                                                        <div className="flex -space-x-1 flex-shrink-0">
+                                                            {pList.slice(0, 3).map((p, i) => (
                                                                 <div
-                                                                    key={uid}
+                                                                    key={p.email || i}
                                                                     className="w-6 h-6 rounded-full flex items-center justify-center text-white text-[10px] font-bold border-2 border-white"
                                                                     style={{ backgroundColor: ev.color }}
+                                                                    title={p.name || p.email}
                                                                 >
-                                                                    {(m?.name || m?.email)?.[0]?.toUpperCase() || '?'}
+                                                                    {(p.name || p.email)?.[0]?.toUpperCase() || '?'}
                                                                 </div>
-                                                            );
-                                                        })}
-                                                    </div>
-                                                )}
+                                                            ))}
+                                                            {pList.length > 3 && (
+                                                                <div className="w-6 h-6 rounded-full flex items-center justify-center bg-warmgray-200 text-warmgray-600 text-[10px] font-bold border-2 border-white">
+                                                                    +{pList.length - 3}
+                                                                </div>
+                                                            )}
+                                                        </div>
+                                                    );
+                                                })()}
                                             </div>
                                         </div>
                                     );

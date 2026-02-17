@@ -92,6 +92,15 @@ export async function saveDoc(roomId: string, docId: string, content: any, userI
 
 // ─── Enhanced Calendar Event Types ───
 
+export interface EventParticipant {
+    uid?: string;           // KinLoop UID (if they're a KinLoop user)
+    email: string;          // Email address (maps to Google Calendar attendees)
+    name?: string;          // Display name
+    rsvp?: 'accepted' | 'declined' | 'tentative' | 'needsAction';
+}
+
+export type EventVisibility = 'everyone' | 'participants' | 'private' | 'custom';
+
 export interface CalendarEvent {
     id: string;
     title: string;
@@ -100,13 +109,45 @@ export interface CalendarEvent {
     endTime?: string;    // HH:mm (24h)
     description?: string;
     color: string;       // hex color for visual coding
-    assignedTo?: string[];  // array of user UIDs
     allDay: boolean;
     createdBy: string;   // UID
     createdAt?: any;
+
+    // Participants (replaces assignedTo)
+    participants?: EventParticipant[];
+    assignedTo?: string[];  // kept for backward compat
+
+    // Visibility control
+    visibility?: EventVisibility;  // default: 'everyone'
+    visibleTo?: string[];          // UIDs — only used when visibility === 'custom'
+
+    // Google Calendar sync fields (Phase 2)
+    googleEventId?: string;
+    googleCalendarId?: string;
+    syncedAt?: any;
+    source?: 'kinloop' | 'google';
+    recurrence?: string;  // RRULE string
 }
 
 export type CalendarEventInput = Omit<CalendarEvent, 'id' | 'createdAt'>;
+
+/** Check if a given user can see an event based on its visibility settings */
+export function canUserSeeEvent(event: CalendarEvent, userId: string): boolean {
+    const vis = event.visibility || 'everyone';
+    if (vis === 'everyone') return true;
+    if (vis === 'private') return event.createdBy === userId;
+    if (vis === 'participants') {
+        if (event.createdBy === userId) return true;
+        if (event.participants?.some(p => p.uid === userId)) return true;
+        if (event.assignedTo?.includes(userId)) return true;
+        return false;
+    }
+    if (vis === 'custom') {
+        if (event.createdBy === userId) return true;
+        return event.visibleTo?.includes(userId) ?? false;
+    }
+    return true;
+}
 
 export function subscribeToEvents(roomId: string, callback: (events: CalendarEvent[]) => void) {
     const colRef = collection(db, 'rooms', roomId, 'events');

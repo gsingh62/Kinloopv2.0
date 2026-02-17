@@ -28,6 +28,10 @@ TOOL USAGE RULES:
 - When the user wants to see their saved/favorite recipes, use get_favorite_recipes.
 - When the user wants to plan cooking from favorites, help them pick a recipe, create a shopping list, and schedule it.
 - When the user mentions dates/times for events, use add_event. Parse natural language dates relative to today.
+- Events support participants (room members or external emails) and visibility settings.
+- If the user specifies participants like "add Mom and Dad" or "invite john@example.com", include them in the participants array.
+- If the user says "only I can see this" or "private event", set visibility to "private". If they say "only participants can see", set visibility to "participants".
+- Default visibility is "everyone" (all room members can see the event).
 - When the user wants to plan something (trip, day, party, etc.), use create_document to save the plan.
 - When the user wants to edit a document, use modify_document.
 - When the user wants to delete a document, use delete_document.
@@ -126,7 +130,7 @@ const tools: OpenAI.Chat.Completions.ChatCompletionTool[] = [
         type: 'function',
         function: {
             name: 'add_event',
-            description: 'Add a calendar event. Parse natural language dates and times.',
+            description: 'Add a calendar event. Parse natural language dates and times. Can include participants and visibility settings.',
             parameters: {
                 type: 'object',
                 properties: {
@@ -136,6 +140,24 @@ const tools: OpenAI.Chat.Completions.ChatCompletionTool[] = [
                     endTime: { type: 'string', description: 'End time in HH:mm 24h format (optional)' },
                     description: { type: 'string', description: 'Event description (optional)' },
                     allDay: { type: 'boolean', description: 'Whether all-day event (default true if no time)' },
+                    participants: {
+                        type: 'array',
+                        items: {
+                            type: 'object',
+                            properties: {
+                                uid: { type: 'string', description: 'KinLoop user UID (if a room member)' },
+                                email: { type: 'string', description: 'Email address' },
+                                name: { type: 'string', description: 'Display name' },
+                            },
+                            required: ['email'],
+                        },
+                        description: 'Participants for this event — room members or external emails (optional)',
+                    },
+                    visibility: {
+                        type: 'string',
+                        enum: ['everyone', 'participants', 'private', 'custom'],
+                        description: 'Who can see this event: everyone (default), participants only, private (creator only), or custom',
+                    },
                 },
                 required: ['title', 'date'],
             },
@@ -576,7 +598,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     const contextNote = roomContext
         ? `\n\nROOM CONTEXT:\n- Room: "${roomContext.roomName || 'Family Room'}"\n- Members: ${
-            roomContext.members?.length ? roomContext.members.map((m: any) => `${m.name} (uid: ${m.uid})`).join(', ') : 'unknown'
+            roomContext.members?.length ? roomContext.members.map((m: any) => `${m.name} (uid: ${m.uid}, email: ${m.email || 'unknown'})`).join(', ') : 'unknown'
         }\n- Available lists: ${
             roomContext.lists?.length ? roomContext.lists.map((l: any) => `"${l.name}" (id: ${l.id}, type: ${l.type || 'list'})`).join(', ') : 'none yet'
         }\n- Documents: ${

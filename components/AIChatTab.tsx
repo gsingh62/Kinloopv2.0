@@ -465,6 +465,10 @@ export default function AIChatTab({ roomId, roomName, lists, events, documents, 
                             allDay: action.allDay ?? !action.startTime,
                             color: '#3B82F6',
                             createdBy: user.uid,
+                            participants: action.participants || undefined,
+                            assignedTo: action.participants?.filter((p: any) => p.uid).map((p: any) => p.uid) || undefined,
+                            visibility: action.visibility || 'everyone',
+                            visibleTo: action.visibleTo || undefined,
                         });
                         break;
                     }
@@ -638,7 +642,7 @@ export default function AIChatTab({ roomId, roomName, lists, events, documents, 
                     messages: apiMessages,
                     roomContext: {
                         roomName,
-                        members: members.map(m => ({ uid: m.uid, name: m.name || m.email?.split('@')[0] || 'Unknown' })),
+                        members: members.map(m => ({ uid: m.uid, name: m.name || m.email?.split('@')[0] || 'Unknown', email: m.email })),
                         lists: lists.map(l => ({ id: l.id, name: l.name, type: l.type || 'list' })),
                         events: events.slice(0, 50).map(e => ({ id: e.id, title: e.title, date: e.date })),
                         documents: documents.map(d => ({ id: d.id, title: d.title || 'Untitled' })),

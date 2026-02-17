@@ -328,7 +328,7 @@ export function googleToKinloopEvent(gEvent: GoogleEvent): {
 
     const participants = gEvent.attendees?.map(a => ({
         email: a.email,
-        name: a.displayName,
+        name: a.displayName || '',
         rsvp: a.responseStatus === 'accepted' ? 'accepted' as const
             : a.responseStatus === 'declined' ? 'declined' as const
             : a.responseStatus === 'tentative' ? 'tentative' as const

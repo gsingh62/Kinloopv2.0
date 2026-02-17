@@ -8,6 +8,19 @@ import {
     googleToKinloopEvent,
 } from '../../../lib/googleCalendar';
 
+/** Recursively strip undefined values so Firestore doesn't reject the write */
+function stripUndefined(obj: any): any {
+    if (Array.isArray(obj)) return obj.map(stripUndefined);
+    if (obj && typeof obj === 'object' && !(obj instanceof Date)) {
+        const clean: any = {};
+        for (const [k, v] of Object.entries(obj)) {
+            if (v !== undefined) clean[k] = stripUndefined(v);
+        }
+        return clean;
+    }
+    return obj;
+}
+
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
     if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
@@ -63,7 +76,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
                     if (existing) {
                         // Update existing event
-                        await existing.ref.update({
+                        await existing.ref.update(stripUndefined({
                             title: kinEvent.title,
                             date: kinEvent.date,
                             startTime: kinEvent.startTime || null,
@@ -72,11 +85,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                             allDay: kinEvent.allDay,
                             participants: kinEvent.participants || [],
                             syncedAt: Date.now(),
-                        });
+                        }));
                         updated++;
                     } else {
                         // Create new event
-                        await eventsRef.add({
+                        await eventsRef.add(stripUndefined({
                             title: kinEvent.title,
                             date: kinEvent.date,
                             startTime: kinEvent.startTime || null,
@@ -92,7 +105,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                             visibility: 'everyone',
                             syncedAt: Date.now(),
                             createdAt: new Date(),
-                        });
+                        }));
                         imported++;
                     }
                 }

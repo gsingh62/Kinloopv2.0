@@ -21,21 +21,21 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         const file: File = Array.isArray(files.file) ? files.file[0] : files.file;
         if (!file) return res.status(400).json({ error: 'No file provided' });
 
-        const dataBuffer = fs.readFileSync(file.filepath);
-        const pdfParse = (await import('pdf-parse')).default;
-        const data = await pdfParse(dataBuffer);
-
-        // Clean up temp file
+        const buffer = fs.readFileSync(file.filepath);
         try { fs.unlinkSync(file.filepath); } catch {}
 
-        const text = (data.text || '').trim().slice(0, 15000);
-        if (!text) {
-            return res.status(200).json({ text: '', error: 'No text found — this may be a scanned/image PDF.' });
+        const { extractText } = await import('unpdf');
+        const uint8 = new Uint8Array(buffer);
+        const { text, totalPages } = await extractText(uint8);
+
+        const trimmed = (text || '').trim().slice(0, 15000);
+        if (!trimmed) {
+            return res.status(200).json({ text: '', pages: totalPages, error: 'No text found — this may be a scanned/image PDF.' });
         }
 
         return res.status(200).json({
-            text,
-            pages: data.numpages,
+            text: trimmed,
+            pages: totalPages,
             filename: file.originalFilename || 'document.pdf',
         });
     } catch (err: any) {

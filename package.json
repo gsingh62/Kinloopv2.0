@@ -40,13 +40,13 @@
     "nanoid": "^5.1.5",
     "next": "^16.1.6",
     "openai": "^6.22.0",
-    "pdf-parse": "^2.4.5",
     "react": "^18.2.0",
     "react-dnd": "^14.0.5",
     "react-dnd-html5-backend": "^14.0.0",
     "react-dom": "^18.2.0",
     "react-responsive": "^10.0.1",
     "ts-node": "^10.9.2",
+    "unpdf": "^1.4.0",
     "web-push": "^3.6.7"
   },
   "devDependencies": {

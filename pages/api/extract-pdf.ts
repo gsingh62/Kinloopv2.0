@@ -26,9 +26,12 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
         const { extractText } = await import('unpdf');
         const uint8 = new Uint8Array(buffer);
-        const { text, totalPages } = await extractText(uint8);
+        const result = await extractText(uint8);
 
-        const trimmed = (text || '').trim().slice(0, 15000);
+        // result.text is an array of strings (one per page)
+        const allText = Array.isArray(result.text) ? result.text.join('\n') : String(result.text || '');
+        const totalPages = result.totalPages || 0;
+        const trimmed = allText.trim().slice(0, 15000);
         if (!trimmed) {
             return res.status(200).json({ text: '', pages: totalPages, error: 'No text found — this may be a scanned/image PDF.' });
         }

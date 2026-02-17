@@ -259,6 +259,30 @@ function RecipeCard({
     );
 }
 
+/** Resize and compress an image to reduce payload size for AI vision */
+function compressImage(file: File, maxDim: number, quality: number): Promise<string> {
+    return new Promise((resolve, reject) => {
+        const img = new Image();
+        img.onload = () => {
+            let { width, height } = img;
+            if (width > maxDim || height > maxDim) {
+                const scale = maxDim / Math.max(width, height);
+                width = Math.round(width * scale);
+                height = Math.round(height * scale);
+            }
+            const canvas = document.createElement('canvas');
+            canvas.width = width;
+            canvas.height = height;
+            const ctx = canvas.getContext('2d');
+            if (!ctx) { reject(new Error('Canvas not supported')); return; }
+            ctx.drawImage(img, 0, 0, width, height);
+            resolve(canvas.toDataURL('image/jpeg', quality));
+        };
+        img.onerror = () => reject(new Error('Failed to load image'));
+        img.src = URL.createObjectURL(file);
+    });
+}
+
 const SUGGESTION_CHIPS = [
     { icon: ChefHat, label: 'Extract a recipe', prompt: 'Can you extract the recipe from this URL? ' },
     { icon: ListPlus, label: 'Add to list', prompt: 'Add these items to my grocery list: ' },
@@ -380,16 +404,11 @@ export default function AIChatTab({ roomId, roomName, lists, events, documents, 
                 setPendingPdfName(null);
             }
         } else if (file.type.startsWith('image/')) {
-            // Image upload — convert to base64 for AI vision
+            // Image upload — resize, compress, then convert to base64 for AI vision
             setPdfExtracting(true);
             setPendingPdfName(file.name);
             try {
-                const reader = new FileReader();
-                const base64 = await new Promise<string>((resolve, reject) => {
-                    reader.onload = () => resolve(reader.result as string);
-                    reader.onerror = reject;
-                    reader.readAsDataURL(file);
-                });
+                const base64 = await compressImage(file, 1024, 0.8);
                 await sendToAI(
                     `I uploaded an image "${file.name}". Please look at it and extract any chores, tasks, or to-do items you can see. Propose adding them to a chore board.`,
                     undefined,

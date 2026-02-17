@@ -202,9 +202,10 @@ function stripUndefined(obj: Record<string, any>): Record<string, any> {
     return Object.fromEntries(Object.entries(obj).filter(([_, v]) => v !== undefined));
 }
 
-export async function addCalendarEvent(roomId: string, event: CalendarEventInput) {
+export async function addCalendarEvent(roomId: string, event: CalendarEventInput): Promise<string> {
     const colRef = collection(db, 'rooms', roomId, 'events');
-    await addDoc(colRef, { ...stripUndefined(event as any), createdAt: serverTimestamp() });
+    const docRef = await addDoc(colRef, { ...stripUndefined(event as any), createdAt: serverTimestamp() });
+    return docRef.id;
 }
 
 export async function updateCalendarEvent(roomId: string, eventId: string, updates: Partial<CalendarEventInput>) {

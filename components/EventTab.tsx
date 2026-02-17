@@ -1,5 +1,5 @@
 // components/EventTab.tsx — Production-quality Shared Calendar
-import { useState, useMemo, useCallback, useEffect } from 'react';
+import { useState, useMemo, useCallback, useEffect, useRef } from 'react';
 import { auth } from '../lib/firebase';
 import {
     CalendarEvent,
@@ -17,6 +17,7 @@ import {
 import {
     ChevronLeft, ChevronRight, Plus, X, Clock, Trash2, Edit3, Users, Calendar,
     Eye, EyeOff, Lock, Globe, UserCheck, Mail, Check, ChevronDown,
+    RefreshCw, Loader2, Unlink, ExternalLink, CloudOff,
 } from 'lucide-react';
 
 // ─── Color Palette for events ───
@@ -72,12 +73,25 @@ interface EventTabProps {
     members?: RoomMember[];
 }
 
+// ─── Google Calendar Icon ───
+function GoogleCalIcon({ size = 16, className = '' }: { size?: number; className?: string }) {
+    return (
+        <svg viewBox="0 0 24 24" width={size} height={size} className={className}>
+            <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 0 1-2.2 3.32v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.1z" fill="#4285F4"/>
+            <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/>
+            <path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" fill="#FBBC05"/>
+            <path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/>
+        </svg>
+    );
+}
+
 // ─── Event Form Modal ───
 interface EventFormProps {
     initialDate?: string;
     event?: CalendarEvent;
     members: RoomMember[];
-    onSave: (event: CalendarEventInput) => void;
+    googleConnected?: boolean;
+    onSave: (event: CalendarEventInput, exportToGoogle?: boolean) => void;
     onDelete?: () => void;
     onClose: () => void;
 }
@@ -90,7 +104,7 @@ const VISIBILITY_OPTIONS: { value: EventVisibility; label: string; icon: typeof 
     { value: 'custom', label: 'Custom', icon: Eye, desc: 'Choose who can see' },
 ];
 
-function EventFormModal({ initialDate, event, members, onSave, onDelete, onClose }: EventFormProps) {
+function EventFormModal({ initialDate, event, members, googleConnected, onSave, onDelete, onClose }: EventFormProps) {
     const [title, setTitle] = useState(event?.title || '');
     const [date, setDate] = useState(event?.date || initialDate || '');
     const [allDay, setAllDay] = useState(event?.allDay ?? true);
@@ -118,6 +132,9 @@ function EventFormModal({ initialDate, event, members, onSave, onDelete, onClose
     const [visibility, setVisibility] = useState<EventVisibility>(event?.visibility || 'everyone');
     const [visibleTo, setVisibleTo] = useState<string[]>(event?.visibleTo || []);
     const [showVisDropdown, setShowVisDropdown] = useState(false);
+
+    // Google Calendar export
+    const [exportToGoogle, setExportToGoogle] = useState(!!event?.googleEventId || false);
 
     const toggleParticipant = (member: RoomMember) => {
         setParticipants(prev => {
@@ -164,7 +181,7 @@ function EventFormModal({ initialDate, event, members, onSave, onDelete, onClose
             visibleTo: visibility === 'custom' && visibleTo.length > 0 ? visibleTo : undefined,
         };
 
-        onSave(eventData);
+        onSave(eventData, exportToGoogle);
     };
 
     const selectedVis = VISIBILITY_OPTIONS.find(v => v.value === visibility)!;
@@ -413,6 +430,30 @@ function EventFormModal({ initialDate, event, members, onSave, onDelete, onClose
                         )}
                     </div>
 
+                    {/* ─── Google Calendar Export Toggle ─── */}
+                    {googleConnected && event?.source !== 'google' && (
+                        <div className="flex items-center justify-between py-2 px-1">
+                            <div className="flex items-center gap-2.5">
+                                <GoogleCalIcon size={18} />
+                                <div>
+                                    <p className="text-sm font-medium text-warmgray-700">Add to Google Calendar</p>
+                                    <p className="text-[11px] text-warmgray-400">
+                                        {participants.filter(p => p.email).length > 0
+                                            ? `Participants will get Google invite emails`
+                                            : `Syncs to your Google Calendar`}
+                                    </p>
+                                </div>
+                            </div>
+                            <button
+                                type="button"
+                                onClick={() => setExportToGoogle(!exportToGoogle)}
+                                className={`relative w-11 h-6 rounded-full transition-colors ${exportToGoogle ? 'bg-blue-500' : 'bg-warmgray-300'}`}
+                            >
+                                <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${exportToGoogle ? 'translate-x-5' : 'translate-x-0'}`} />
+                            </button>
+                        </div>
+                    )}
+
                     {/* Actions */}
                     <div className="flex items-center gap-3 pt-2">
                         <button
@@ -572,6 +613,18 @@ function EventDetailSheet({ event, members, onEdit, onDelete, onClose }: EventDe
     );
 }
 
+// ─── Click outside helper ───
+function useClickOutside(ref: React.RefObject<HTMLElement | null>, handler: () => void) {
+    useEffect(() => {
+        const listener = (e: MouseEvent) => {
+            if (!ref.current || ref.current.contains(e.target as Node)) return;
+            handler();
+        };
+        document.addEventListener('mousedown', listener);
+        return () => document.removeEventListener('mousedown', listener);
+    }, [ref, handler]);
+}
+
 // ─── Main Calendar Component ───
 export default function EventTab({ roomId, members = [] }: EventTabProps) {
     const today = new Date();
@@ -584,7 +637,45 @@ export default function EventTab({ roomId, members = [] }: EventTabProps) {
     const [viewingEvent, setViewingEvent] = useState<CalendarEvent | null>(null);
     const [view, setView] = useState<'month' | 'agenda'>('month');
 
+    // Google Calendar state
+    const [gcalConnected, setGcalConnected] = useState(false);
+    const [gcalEmail, setGcalEmail] = useState('');
+    const [gcalSyncing, setGcalSyncing] = useState(false);
+    const [gcalSyncResult, setGcalSyncResult] = useState<string | null>(null);
+    const [showGcalMenu, setShowGcalMenu] = useState(false);
+    const gcalMenuRef = useRef<HTMLDivElement>(null);
+    useClickOutside(gcalMenuRef, () => setShowGcalMenu(false));
+
     const currentUserId = auth.currentUser?.uid || '';
+
+    // Check Google Calendar connection status
+    useEffect(() => {
+        if (!currentUserId) return;
+        fetch(`/api/google/status?uid=${currentUserId}`)
+            .then(r => r.json())
+            .then(data => {
+                setGcalConnected(data.connected);
+                setGcalEmail(data.email || '');
+            })
+            .catch(() => {});
+    }, [currentUserId]);
+
+    // Handle ?gcal=connected query param (after OAuth callback)
+    useEffect(() => {
+        if (typeof window === 'undefined') return;
+        const params = new URLSearchParams(window.location.search);
+        if (params.get('gcal') === 'connected') {
+            setGcalConnected(true);
+            setGcalSyncResult('Google Calendar connected! Syncing...');
+            // Auto-sync after connecting
+            handleGcalSync();
+            // Clean up URL
+            const url = new URL(window.location.href);
+            url.searchParams.delete('gcal');
+            url.searchParams.delete('tab');
+            window.history.replaceState({}, '', url.pathname);
+        }
+    }, []);
 
     // Subscribe to events
     useEffect(() => {
@@ -683,13 +774,81 @@ export default function EventTab({ roomId, members = [] }: EventTabProps) {
             .sort((a, b) => a.date.localeCompare(b.date) || (a.startTime || '').localeCompare(b.startTime || ''));
     }, [visibleEvents]);
 
+    // ─── Google Calendar Handlers ───
+    const handleGcalConnect = () => {
+        if (!currentUserId) return;
+        window.location.href = `/api/google/auth?uid=${currentUserId}&roomId=${roomId}`;
+    };
+
+    const handleGcalDisconnect = async () => {
+        if (!confirm('Disconnect Google Calendar? Events already imported will remain.')) return;
+        try {
+            await fetch('/api/google/disconnect', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ uid: currentUserId }),
+            });
+            setGcalConnected(false);
+            setGcalEmail('');
+            setShowGcalMenu(false);
+            setGcalSyncResult('Google Calendar disconnected');
+            setTimeout(() => setGcalSyncResult(null), 3000);
+        } catch {}
+    };
+
+    const handleGcalSync = async () => {
+        if (!currentUserId || !roomId) return;
+        setGcalSyncing(true);
+        setGcalSyncResult(null);
+        try {
+            const res = await fetch('/api/google/sync', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ uid: currentUserId, roomId }),
+            });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error);
+            const parts = [];
+            if (data.imported) parts.push(`${data.imported} imported`);
+            if (data.updated) parts.push(`${data.updated} updated`);
+            if (data.removed) parts.push(`${data.removed} removed`);
+            setGcalSyncResult(parts.length ? `Synced: ${parts.join(', ')}` : 'Already up to date');
+        } catch (err: any) {
+            setGcalSyncResult(`Sync failed: ${err.message}`);
+        } finally {
+            setGcalSyncing(false);
+            setTimeout(() => setGcalSyncResult(null), 5000);
+        }
+    };
+
+    const handleExportToGoogle = async (eventId: string) => {
+        if (!currentUserId || !roomId) return;
+        try {
+            const res = await fetch('/api/google/export', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ uid: currentUserId, roomId, eventId }),
+            });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error);
+        } catch (err: any) {
+            console.error('Export to Google failed:', err);
+        }
+    };
+
     // Handlers
-    const handleSaveEvent = async (eventData: CalendarEventInput) => {
+    const handleSaveEvent = async (eventData: CalendarEventInput, exportToGoogle?: boolean) => {
         try {
             if (editingEvent) {
                 await updateCalendarEvent(roomId, editingEvent.id, eventData);
+                if (exportToGoogle && gcalConnected) {
+                    await handleExportToGoogle(editingEvent.id);
+                }
             } else {
-                await addCalendarEvent(roomId, eventData);
+                const newEventId = await addCalendarEvent(roomId, eventData);
+                if (exportToGoogle && gcalConnected && newEventId) {
+                    await handleExportToGoogle(newEventId);
+                }
             }
             setShowForm(false);
             setEditingEvent(null);
@@ -725,6 +884,17 @@ export default function EventTab({ roomId, members = [] }: EventTabProps) {
 
     return (
         <div className="h-full flex flex-col">
+            {/* ─── Sync result toast ─── */}
+            {gcalSyncResult && (
+                <div className="mx-1 mb-2 px-3 py-2 bg-blue-50 text-blue-700 text-xs font-medium rounded-lg flex items-center gap-2 animate-fade-in">
+                    <GoogleCalIcon size={14} />
+                    {gcalSyncResult}
+                    <button onClick={() => setGcalSyncResult(null)} className="ml-auto text-blue-400 hover:text-blue-600">
+                        <X size={14} />
+                    </button>
+                </div>
+            )}
+
             {/* ─── Calendar Header ─── */}
             <div className="flex items-center justify-between px-1 mb-4">
                 <div className="flex items-center gap-2">
@@ -740,6 +910,55 @@ export default function EventTab({ roomId, members = [] }: EventTabProps) {
                 </div>
 
                 <div className="flex items-center gap-1">
+                    {/* Google Calendar Button */}
+                    <div className="relative mr-1" ref={gcalMenuRef}>
+                        {gcalConnected ? (
+                            <>
+                                <button
+                                    onClick={() => setShowGcalMenu(!showGcalMenu)}
+                                    className="flex items-center gap-1.5 px-2.5 py-1.5 bg-blue-50 text-blue-600 rounded-lg text-xs font-medium hover:bg-blue-100 transition-colors"
+                                    title={`Connected: ${gcalEmail}`}
+                                >
+                                    <GoogleCalIcon size={14} />
+                                    <span className="hidden sm:inline">Synced</span>
+                                    {gcalSyncing && <Loader2 size={12} className="animate-spin" />}
+                                </button>
+                                {showGcalMenu && (
+                                    <div className="absolute right-0 top-full mt-1 w-56 bg-white border border-warmgray-200 rounded-xl shadow-lg z-20 overflow-hidden">
+                                        <div className="px-3 py-2.5 border-b border-warmgray-100">
+                                            <p className="text-xs text-warmgray-400">Connected as</p>
+                                            <p className="text-sm font-medium text-warmgray-800 truncate">{gcalEmail}</p>
+                                        </div>
+                                        <button
+                                            onClick={() => { setShowGcalMenu(false); handleGcalSync(); }}
+                                            disabled={gcalSyncing}
+                                            className="w-full flex items-center gap-2.5 px-3 py-2.5 text-sm text-warmgray-700 hover:bg-warmgray-50 transition-colors disabled:opacity-50"
+                                        >
+                                            <RefreshCw size={15} className={gcalSyncing ? 'animate-spin' : ''} />
+                                            {gcalSyncing ? 'Syncing...' : 'Sync now'}
+                                        </button>
+                                        <button
+                                            onClick={handleGcalDisconnect}
+                                            className="w-full flex items-center gap-2.5 px-3 py-2.5 text-sm text-red-600 hover:bg-red-50 transition-colors"
+                                        >
+                                            <Unlink size={15} />
+                                            Disconnect
+                                        </button>
+                                    </div>
+                                )}
+                            </>
+                        ) : (
+                            <button
+                                onClick={handleGcalConnect}
+                                className="flex items-center gap-1.5 px-2.5 py-1.5 bg-warmgray-100 text-warmgray-600 rounded-lg text-xs font-medium hover:bg-warmgray-200 transition-colors"
+                                title="Connect Google Calendar"
+                            >
+                                <GoogleCalIcon size={14} />
+                                <span className="hidden sm:inline">Connect</span>
+                            </button>
+                        )}
+                    </div>
+
                     {/* View Toggle */}
                     <div className="flex bg-warmgray-100 rounded-lg p-0.5 mr-2">
                         <button
@@ -817,14 +1036,15 @@ export default function EventTab({ roomId, members = [] }: EventTabProps) {
                                             <div
                                                 key={ev.id}
                                                 onClick={e => { e.stopPropagation(); setViewingEvent(ev); }}
-                                                className="truncate text-[10px] sm:text-xs leading-tight px-1.5 py-0.5 rounded-md font-medium cursor-pointer hover:opacity-80 transition-opacity"
+                                                className="flex items-center gap-0.5 truncate text-[10px] sm:text-xs leading-tight px-1.5 py-0.5 rounded-md font-medium cursor-pointer hover:opacity-80 transition-opacity"
                                                 style={{
                                                     backgroundColor: ev.color + '20',
                                                     color: ev.color,
                                                     borderLeft: `3px solid ${ev.color}`,
                                                 }}
                                             >
-                                                {ev.title}
+                                                {ev.source === 'google' && <GoogleCalIcon size={10} className="flex-shrink-0" />}
+                                                <span className="truncate">{ev.title}</span>
                                             </div>
                                         ))}
                                         {dayEvents.length > 3 && (
@@ -971,6 +1191,7 @@ export default function EventTab({ roomId, members = [] }: EventTabProps) {
                     initialDate={selectedDate || formatDate(today.getFullYear(), today.getMonth(), today.getDate())}
                     event={editingEvent || undefined}
                     members={members}
+                    googleConnected={gcalConnected}
                     onSave={handleSaveEvent}
                     onDelete={editingEvent ? () => handleDeleteEvent(editingEvent.id) : undefined}
                     onClose={() => { setShowForm(false); setEditingEvent(null); }}

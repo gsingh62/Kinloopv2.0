@@ -342,32 +342,28 @@ export default function AIChatTab({ roomId, roomName, lists, events, documents, 
         setIsListening(true);
     };
 
-    // ─── PDF Text Extraction ───
+    // ─── PDF Text Extraction (server-side) ───
     const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
         const file = e.target.files?.[0];
         if (!file) return;
         if (fileInputRef.current) fileInputRef.current.value = '';
 
-        if (file.type === 'application/pdf') {
+        if (file.type === 'application/pdf' || file.name.endsWith('.pdf')) {
             setPdfExtracting(true);
             setPendingPdfName(file.name);
             try {
-                const pdfjsLib = await import('pdfjs-dist');
-                pdfjsLib.GlobalWorkerOptions.workerSrc = '/pdf.worker.min.mjs';
-                const arrayBuffer = await file.arrayBuffer();
-                const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
-                let fullText = '';
-                for (let i = 1; i <= pdf.numPages; i++) {
-                    const page = await pdf.getPage(i);
-                    const content = await page.getTextContent();
-                    const pageText = content.items.map((item: any) => item.str).join(' ');
-                    fullText += pageText + '\n';
-                }
-                const trimmed = fullText.trim().slice(0, 12000);
-                if (!trimmed) {
+                const formData = new FormData();
+                formData.append('file', file);
+                const response = await fetch('/api/extract-pdf', { method: 'POST', body: formData });
+                const data = await response.json();
+                if (!response.ok) throw new Error(data.error || 'Failed to extract PDF');
+                if (data.error) {
+                    setError(data.error);
+                } else if (!data.text) {
                     setError('Could not extract text from this PDF. It may be a scanned image.');
                 } else {
-                    setInput(`[PDF: ${file.name}]\n${trimmed}\n\nPlease extract all events, dates, and deadlines from this document and add them to my calendar.`);
+                    const trimmed = data.text.slice(0, 12000);
+                    setInput(`[PDF: ${file.name} — ${data.pages} pages]\n${trimmed}\n\nPlease extract all events, dates, and deadlines from this document and add them to my calendar.`);
                     inputRef.current?.focus();
                 }
             } catch (err: any) {

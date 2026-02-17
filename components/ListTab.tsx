@@ -6,9 +6,10 @@ import {
 import { db, auth } from '../lib/firebase';
 import { useEffect, useState, useRef, useCallback } from 'react';
 import {
-    Plus, Trash2, ChevronDown, CheckCircle2, Circle, ListTodo,
+    Plus, Trash2, ChevronDown, ChevronUp, CheckCircle2, Circle, ListTodo,
     MoreHorizontal, Pencil, X, Loader2, Archive, ClipboardList,
     List, User, Clock, CalendarPlus, UserPlus, UserMinus, GripVertical, Palette,
+    Search, ArrowUpDown, ArrowDownAZ, Clock3, SlidersHorizontal,
 } from 'lucide-react';
 import { addCalendarEvent, type RoomMember } from '../lib/firestoreUtils';
 import {
@@ -125,7 +126,12 @@ export default function ListTab({ roomId, roomName, members = [], onActivity }: 
     const [choreTimeEstimate, setChoreTimeEstimate] = useState('');
     const [newChoreColor, setNewChoreColor] = useState('default');
     const [activeId, setActiveId] = useState<string | null>(null);
+    const [searchQuery, setSearchQuery] = useState('');
+    const [sortMode, setSortMode] = useState<'default' | 'name' | 'recent'>('default');
+    const [showSearch, setShowSearch] = useState(false);
+    const [collapsedSections, setCollapsedSections] = useState<Record<string, boolean>>({});
     const inputRef = useRef<HTMLInputElement>(null);
+    const searchRef = useRef<HTMLInputElement>(null);
     const menuRef = useRef<HTMLDivElement>(null);
 
     const sensors = useSensors(
@@ -421,20 +427,47 @@ export default function ListTab({ roomId, roomName, members = [], onActivity }: 
         }
     };
 
-    // Group chores by assignment for board view
-    const unassignedChores = items.filter(i => !i.assignedTo && !i.completed);
-    const assignedGroups: Record<string, any[]> = {};
-    const doneChores = items.filter(i => i.completed);
+    const toggleSection = useCallback((sectionId: string) => {
+        setCollapsedSections(prev => ({ ...prev, [sectionId]: !prev[sectionId] }));
+    }, []);
 
-    for (const item of items) {
+    // Filter items by search query
+    const filteredItems = searchQuery.trim()
+        ? items.filter(i => i.content?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+            i.assignedToName?.toLowerCase().includes(searchQuery.toLowerCase()))
+        : items;
+
+    // Sort function
+    const sortItems = useCallback((arr: any[]) => {
+        if (sortMode === 'name') return [...arr].sort((a, b) => (a.content || '').localeCompare(b.content || ''));
+        if (sortMode === 'recent') return [...arr].sort((a, b) => {
+            const aTime = a.createdAt?.toMillis?.() || a.createdAt?.seconds * 1000 || 0;
+            const bTime = b.createdAt?.toMillis?.() || b.createdAt?.seconds * 1000 || 0;
+            return bTime - aTime;
+        });
+        return arr; // default: Firestore order
+    }, [sortMode]);
+
+    // Group chores by assignment for board view
+    const unassignedChores = sortItems(filteredItems.filter(i => !i.assignedTo && !i.completed));
+    const assignedGroups: Record<string, any[]> = {};
+    const doneChores = sortItems(filteredItems.filter(i => i.completed));
+
+    for (const item of filteredItems) {
         if (item.assignedTo && !item.completed) {
             if (!assignedGroups[item.assignedTo]) assignedGroups[item.assignedTo] = [];
             assignedGroups[item.assignedTo].push(item);
         }
     }
+    // Sort within each assigned group
+    for (const uid of Object.keys(assignedGroups)) {
+        assignedGroups[uid] = sortItems(assignedGroups[uid]);
+    }
 
     const activeItem = activeId ? items.find(i => i.id === activeId) : null;
-    const allItemIds = items.filter(i => !i.completed).map(i => i.id);
+    const allItemIds = filteredItems.filter(i => !i.completed).map(i => i.id);
+    const totalChores = items.length;
+    const matchCount = filteredItems.length;
 
     return (
         <div className="max-w-2xl mx-auto">
@@ -565,6 +598,59 @@ export default function ListTab({ roomId, roomName, members = [], onActivity }: 
                 </div>
             )}
 
+            {/* Search & Sort Bar (for chore boards with items) */}
+            {selectedListId && isChoreBoard && items.length > 5 && (
+                <div className="mb-4 flex items-center gap-2">
+                    {/* Search toggle */}
+                    <div className={`flex-1 flex items-center transition-all ${showSearch ? 'gap-2' : ''}`}>
+                        <button onClick={() => { setShowSearch(!showSearch); if (!showSearch) setTimeout(() => searchRef.current?.focus(), 100); }}
+                            className={`p-2 rounded-lg transition-all ${showSearch || searchQuery ? 'bg-violet-100 text-violet-600' : 'text-warmgray-400 hover:text-warmgray-600 hover:bg-warmgray-100'}`}>
+                            <Search size={16} />
+                        </button>
+                        {showSearch && (
+                            <div className="flex-1 relative">
+                                <input
+                                    ref={searchRef}
+                                    type="text"
+                                    value={searchQuery}
+                                    onChange={e => setSearchQuery(e.target.value)}
+                                    placeholder="Search chores..."
+                                    className="w-full px-3 py-1.5 bg-white border border-warmgray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent placeholder-warmgray-400"
+                                />
+                                {searchQuery && (
+                                    <button onClick={() => { setSearchQuery(''); searchRef.current?.focus(); }}
+                                        className="absolute right-2 top-1/2 -translate-y-1/2 text-warmgray-400 hover:text-warmgray-600">
+                                        <X size={14} />
+                                    </button>
+                                )}
+                            </div>
+                        )}
+                        {searchQuery && (
+                            <span className="text-xs text-warmgray-400 whitespace-nowrap">{matchCount} of {totalChores}</span>
+                        )}
+                    </div>
+
+                    {/* Sort controls */}
+                    <div className="flex items-center gap-1 bg-warmgray-50 rounded-lg p-0.5">
+                        <button onClick={() => setSortMode('default')}
+                            className={`p-1.5 rounded-md text-xs transition-all ${sortMode === 'default' ? 'bg-white shadow-sm text-warmgray-800' : 'text-warmgray-400 hover:text-warmgray-600'}`}
+                            title="Default order">
+                            <SlidersHorizontal size={14} />
+                        </button>
+                        <button onClick={() => setSortMode('name')}
+                            className={`p-1.5 rounded-md text-xs transition-all ${sortMode === 'name' ? 'bg-white shadow-sm text-warmgray-800' : 'text-warmgray-400 hover:text-warmgray-600'}`}
+                            title="Sort by name">
+                            <ArrowDownAZ size={14} />
+                        </button>
+                        <button onClick={() => setSortMode('recent')}
+                            className={`p-1.5 rounded-md text-xs transition-all ${sortMode === 'recent' ? 'bg-white shadow-sm text-warmgray-800' : 'text-warmgray-400 hover:text-warmgray-600'}`}
+                            title="Sort by recently added">
+                            <Clock3 size={14} />
+                        </button>
+                    </div>
+                </div>
+            )}
+
             {/* Content */}
             {!selectedListId ? (
                 <div className="text-center py-16">
@@ -584,7 +670,8 @@ export default function ListTab({ roomId, roomName, members = [], onActivity }: 
                     onDragStart={handleDragStart} onDragEnd={handleDragEnd}>
                     <div>
                         {/* Unassigned section */}
-                        <DroppableZone id="zone-unassigned" label="Unassigned" icon={<ClipboardList size={13} />} count={unassignedChores.length}>
+                        <DroppableZone id="zone-unassigned" label="Unassigned" icon={<ClipboardList size={13} />} count={unassignedChores.length}
+                            collapsed={collapsedSections['unassigned']} onToggleCollapse={() => toggleSection('unassigned')}>
                             <SortableContext items={unassignedChores.map(i => i.id)} strategy={verticalListSortingStrategy}>
                                 {unassignedChores.length === 0 && (
                                     <p className="text-xs text-warmgray-400 italic py-3 text-center">Drag chores here or add new ones below</p>
@@ -611,6 +698,7 @@ export default function ListTab({ roomId, roomName, members = [], onActivity }: 
                             return (
                                 <DroppableZone key={uid} id={`zone-${uid}`}
                                     label={name} count={chores.length}
+                                    collapsed={collapsedSections[uid]} onToggleCollapse={() => toggleSection(uid)}
                                     icon={
                                         <div className="w-5 h-5 bg-kin-100 text-kin-600 rounded-full flex items-center justify-center text-[10px] font-bold">
                                             {initial}
@@ -637,7 +725,8 @@ export default function ListTab({ roomId, roomName, members = [], onActivity }: 
 
                         {/* Done section */}
                         <DroppableZone id="zone-done" label="Done" icon={<CheckCircle2 size={13} className="text-green-500" />}
-                            count={doneChores.length} className="border-green-200 bg-green-50/30">
+                            count={doneChores.length} className="border-green-200 bg-green-50/30"
+                            collapsed={collapsedSections['done']} onToggleCollapse={() => toggleSection('done')}>
                             {doneChores.map(item => (
                                 <div key={item.id} className="group flex items-center gap-3 px-3 py-2 rounded-xl bg-green-50/50">
                                     <button onClick={() => handleToggleItem(item)}>
@@ -749,21 +838,33 @@ export default function ListTab({ roomId, roomName, members = [], onActivity }: 
 }
 
 /* ═══ Droppable Zone ═══ */
-function DroppableZone({ id, label, icon, count, className, children }: {
+function DroppableZone({ id, label, icon, count, className, children, collapsed, onToggleCollapse }: {
     id: string; label: string; icon: React.ReactNode; count: number;
     className?: string; children: React.ReactNode;
+    collapsed?: boolean; onToggleCollapse?: () => void;
 }) {
     const { setNodeRef, isOver } = useSortable({ id, data: { type: 'zone' } });
     return (
         <div ref={setNodeRef} className={`mb-4 p-3 rounded-2xl border-2 border-dashed transition-all ${
             isOver ? 'border-kin-400 bg-kin-50/50' : `border-warmgray-200 ${className || 'bg-warmgray-50/30'}`
         }`}>
-            <h4 className="text-xs font-semibold text-warmgray-500 uppercase tracking-wide mb-2 flex items-center gap-1.5">
-                {icon} {label} ({count})
-            </h4>
-            <div className="space-y-1.5 min-h-[20px]">
-                {children}
-            </div>
+            <button onClick={onToggleCollapse}
+                className="w-full text-left flex items-center gap-1.5 mb-1 group">
+                <h4 className="text-xs font-semibold text-warmgray-500 uppercase tracking-wide flex items-center gap-1.5 flex-1">
+                    {icon} {label}
+                    <span className="text-warmgray-400 font-normal">({count})</span>
+                </h4>
+                {onToggleCollapse && (
+                    <span className="text-warmgray-300 group-hover:text-warmgray-500 transition-colors">
+                        {collapsed ? <ChevronDown size={14} /> : <ChevronUp size={14} />}
+                    </span>
+                )}
+            </button>
+            {!collapsed && (
+                <div className="space-y-1.5 min-h-[20px] mt-1">
+                    {children}
+                </div>
+            )}
         </div>
     );
 }

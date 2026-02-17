@@ -53,6 +53,7 @@ function ActionBadge({ action }: { action: any }) {
         toggle_recipe_favorite: { icon: Heart, color: 'pink', label: `Toggled favorite for "${action.recipeTitle}"` },
         delete_recipe: { icon: Trash2, color: 'red', label: `Deleted recipe "${action.recipeTitle}"` },
         get_favorite_recipes: { icon: BookOpen, color: 'violet', label: 'Loaded your recipes' },
+        add_chores: { icon: ClipboardList, color: 'amber', label: `Added ${action.chores?.length || 0} chores to "${action.listName}"` },
         assign_chore: { icon: User, color: 'violet', label: `Assigned "${action.choreName}" to ${action.memberName}` },
         add_chore_to_calendar: { icon: CalendarPlus, color: 'sky', label: `Added "${action.choreName}" to calendar` },
         leave_room: { icon: DoorOpen, color: 'amber', label: 'Left the room' },
@@ -265,6 +266,7 @@ const SUGGESTION_CHIPS = [
     { icon: CalendarPlus, label: 'Add event', prompt: 'Add an event for ' },
     { icon: Globe, label: 'Events from URL', prompt: 'Extract all events and dates from this page: ' },
     { icon: FileUp, label: 'PDF to calendar', prompt: '' },
+    { icon: ClipboardList, label: 'Image to chores', prompt: '' },
     { icon: FileText, label: 'Plan something', prompt: 'Help me plan ' },
     { icon: Star, label: 'My recipes', prompt: 'Show me my saved recipes and help me pick what to cook' },
 ];
@@ -377,6 +379,28 @@ export default function AIChatTab({ roomId, roomName, lists, events, documents, 
                 setPdfExtracting(false);
                 setPendingPdfName(null);
             }
+        } else if (file.type.startsWith('image/')) {
+            // Image upload — convert to base64 for AI vision
+            setPdfExtracting(true);
+            setPendingPdfName(file.name);
+            try {
+                const reader = new FileReader();
+                const base64 = await new Promise<string>((resolve, reject) => {
+                    reader.onload = () => resolve(reader.result as string);
+                    reader.onerror = reject;
+                    reader.readAsDataURL(file);
+                });
+                await sendToAI(
+                    `I uploaded an image "${file.name}". Please look at it and extract any chores, tasks, or to-do items you can see. Propose adding them to a chore board.`,
+                    undefined,
+                    base64,
+                );
+            } catch (err: any) {
+                setError(`Failed to process image: ${err.message}`);
+            } finally {
+                setPdfExtracting(false);
+                setPendingPdfName(null);
+            }
         } else if (file.type.startsWith('text/') || file.name.endsWith('.csv') || file.name.endsWith('.ics')) {
             const text = await file.text();
             const trimmed = text.trim().slice(0, 12000);
@@ -385,7 +409,7 @@ export default function AIChatTab({ roomId, roomName, lists, events, documents, 
                 `[File content from ${file.name}]:\n${trimmed}`,
             );
         } else {
-            setError('Please upload a PDF, text, or CSV file.');
+            setError('Please upload a PDF, text, CSV, or image file.');
         }
     };
 
@@ -537,6 +561,44 @@ export default function AIChatTab({ roomId, roomName, lists, events, documents, 
                         }
                         break;
                     }
+                    case 'add_chores': {
+                        // Bulk-add chores to a chore board
+                        let targetList = lists.find(l => l.name.toLowerCase() === action.listName.toLowerCase());
+                        if (!targetList) {
+                            // Create the chore board
+                            const listRef = await addDoc(collection(db, 'rooms', roomId, 'lists'), {
+                                name: action.listName,
+                                type: 'choreboard',
+                                createdAt: serverTimestamp(),
+                            });
+                            targetList = { id: listRef.id, name: action.listName, type: 'choreboard' };
+                        }
+                        const chores = action.chores || [];
+                        for (let i = 0; i < chores.length; i++) {
+                            const chore = chores[i];
+                            const assignee = chore.assignee
+                                ? members.find(m => {
+                                    const mName = (m.name || m.email?.split('@')[0] || '').toLowerCase();
+                                    return mName.includes(chore.assignee.toLowerCase());
+                                })
+                                : null;
+                            await addDoc(
+                                collection(db, 'rooms', roomId, 'lists', targetList.id, 'items'),
+                                {
+                                    content: chore.content,
+                                    completed: false,
+                                    createdAt: serverTimestamp(),
+                                    createdBy: user.uid,
+                                    assignedTo: assignee?.uid || '',
+                                    assignedToName: assignee ? (assignee.name || assignee.email?.split('@')[0] || '') : '',
+                                    timeEstimate: chore.timeEstimate || 0,
+                                    color: 'default',
+                                    sortOrder: i,
+                                },
+                            );
+                        }
+                        break;
+                    }
                     case 'assign_chore': {
                         const matchedList = lists.find(l => l.name.toLowerCase() === action.listName.toLowerCase());
                         if (matchedList) {
@@ -609,7 +671,7 @@ export default function AIChatTab({ roomId, roomName, lists, events, documents, 
         inputRef.current?.focus();
     }
 
-    async function sendToAI(visibleMessage: string, hiddenContext?: string) {
+    async function sendToAI(visibleMessage: string, hiddenContext?: string, imageBase64?: string) {
         if (!visibleMessage.trim() || isLoading) return;
 
         setInput('');
@@ -625,9 +687,18 @@ export default function AIChatTab({ roomId, roomName, lists, events, documents, 
         setIsLoading(true);
 
         // Build API message: visible message + hidden context if provided
-        const apiContent = hiddenContext
-            ? `${visibleMessage}\n\n--- EXTRACTED CONTENT (do not repeat this raw text back to the user) ---\n${hiddenContext}`
-            : visibleMessage;
+        let apiContent: string | any[];
+        if (imageBase64) {
+            // Vision message with image
+            apiContent = [
+                { type: 'text', text: visibleMessage },
+                { type: 'image_url', image_url: { url: imageBase64, detail: 'high' } },
+            ];
+        } else {
+            apiContent = hiddenContext
+                ? `${visibleMessage}\n\n--- EXTRACTED CONTENT (do not repeat this raw text back to the user) ---\n${hiddenContext}`
+                : visibleMessage;
+        }
 
         try {
             const recentMessages = [...messages.slice(-20), { role: 'user' as const, content: apiContent }];
@@ -920,7 +991,7 @@ export default function AIChatTab({ roomId, roomName, lists, events, documents, 
                     </div>
                 )}
 
-                <input ref={fileInputRef} type="file" accept=".pdf,.txt,.csv,.ics" className="hidden" onChange={handleFileUpload} />
+                <input ref={fileInputRef} type="file" accept=".pdf,.txt,.csv,.ics,image/*" className="hidden" onChange={handleFileUpload} />
 
                 <div className="flex items-center gap-1.5">
                     <button

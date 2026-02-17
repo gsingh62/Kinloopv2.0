@@ -14,6 +14,7 @@ const SYSTEM_PROMPT = `You are KinLoop AI, a warm and helpful family assistant b
 - Room management (leave room, remove members)
 - Extracting events/dates from URLs (school calendars, event pages, bookings)
 - Extracting events/dates from pasted text or PDF content (the app sends you extracted PDF text)
+- Extracting chores from images (photos of whiteboards, chore charts, handwritten lists, etc.) and adding them in bulk to chore boards
 
 PERSONALITY: You're friendly, concise, and practical — like a helpful family member. Use a warm tone but keep responses brief. Don't over-explain.
 
@@ -54,6 +55,15 @@ EVENT DELETION:
 - If the user says "delete the last added events", "undo the calendar events", or similar, identify the relevant events from context and delete them.
 - If the user asks to delete events by date range or title pattern, find all matching events from context and delete each one.
 - Always confirm what you're deleting by listing the event titles before executing the deletions.
+
+CHORE EXTRACTION FROM IMAGES:
+- When the user uploads an image (photo of a whiteboard, chore chart, handwritten list, printed schedule, etc.) and asks to extract chores, analyze the image carefully.
+- Identify all chore/task items visible in the image.
+- Present the chores as a clean numbered list and ask which chore board to add them to (or offer to create a new one).
+- IMPORTANT: Always propose the chores first and wait for user confirmation before adding them.
+- After confirmation, use add_chores to bulk-add all chores at once to the specified chore board.
+- If you can infer time estimates from the image or context (e.g. "quick", "30 min"), include them.
+- If you can identify who chores are assigned to, include assignee info.
 
 RECIPE PRESENTATION:
 When presenting a recipe, format it beautifully with:
@@ -333,6 +343,33 @@ const tools: OpenAI.Chat.Completions.ChatCompletionTool[] = [
     {
         type: 'function',
         function: {
+            name: 'add_chores',
+            description: 'Bulk-add multiple chores to a chore board. Creates the board if it does not exist. Use after extracting chores from an image or text.',
+            parameters: {
+                type: 'object',
+                properties: {
+                    listName: { type: 'string', description: 'Name of the chore board to add chores to (creates if not found)' },
+                    chores: {
+                        type: 'array',
+                        items: {
+                            type: 'object',
+                            properties: {
+                                content: { type: 'string', description: 'The chore description' },
+                                timeEstimate: { type: 'number', description: 'Estimated minutes to complete (optional)' },
+                                assignee: { type: 'string', description: 'Name of person to assign to (optional, matched to room members)' },
+                            },
+                            required: ['content'],
+                        },
+                        description: 'Array of chores to add',
+                    },
+                },
+                required: ['listName', 'chores'],
+            },
+        },
+    },
+    {
+        type: 'function',
+        function: {
             name: 'fetch_events_from_url',
             description: 'Fetch a webpage and extract event/date information from it. Use when a user shares a URL and wants to find dates, events, or schedules on that page.',
             parameters: {
@@ -572,6 +609,10 @@ function processToolCalls(toolCalls: OpenAI.Chat.Completions.ChatCompletionMessa
             case 'add_chore_to_calendar':
                 actions.push({ type: 'add_chore_to_calendar', ...args });
                 toolResults.push({ tool_call_id: tc.id, content: `Added "${args.choreName}" to calendar on ${args.date}` });
+                break;
+            case 'add_chores':
+                actions.push({ type: 'add_chores', ...args });
+                toolResults.push({ tool_call_id: tc.id, content: `Added ${args.chores?.length || 0} chores to "${args.listName}"` });
                 break;
             case 'leave_room':
                 actions.push({ type: 'leave_room', ...args });

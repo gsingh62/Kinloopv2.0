@@ -4,7 +4,7 @@ import {
     collection, addDoc, serverTimestamp, query, orderBy, onSnapshot, doc, getDocs, deleteDoc, updateDoc,
 } from 'firebase/firestore';
 import {
-    addCalendarEvent, createDoc, deleteDocument, updateDocContent,
+    addCalendarEvent, deleteEvent, createDoc, deleteDocument, updateDocContent,
     deleteList as deleteListFn, deleteListItemsByContent,
     saveRecipe as saveRecipeFn, deleteRecipe as deleteRecipeFn,
     toggleRecipeFavorite, updateRecipeCompletedSteps,
@@ -44,6 +44,7 @@ function ActionBadge({ action }: { action: any }) {
         delete_list_items: { icon: Trash2, color: 'red', label: `Removed ${action.items?.length} items from "${action.listName}"` },
         delete_list: { icon: Trash2, color: 'red', label: `Deleted list "${action.listName}"` },
         add_event: { icon: CalendarPlus, color: 'sky', label: `Added "${action.title}" on ${action.date}` },
+        delete_event: { icon: Trash2, color: 'red', label: `Deleted "${action.title}"` },
         create_document: { icon: FileText, color: 'amber', label: `Created doc "${action.title}"` },
         modify_document: { icon: PenLine, color: 'amber', label: `Modified doc "${action.title}"` },
         delete_document: { icon: Trash2, color: 'red', label: `Deleted doc "${action.title}"` },
@@ -363,8 +364,11 @@ export default function AIChatTab({ roomId, roomName, lists, events, documents, 
                     setError('Could not extract text from this PDF. It may be a scanned image.');
                 } else {
                     const trimmed = data.text.slice(0, 12000);
-                    setInput(`[PDF: ${file.name} — ${data.pages} pages]\n${trimmed}\n\nPlease extract all events, dates, and deadlines from this document and add them to my calendar.`);
-                    inputRef.current?.focus();
+                    // Auto-send to AI without showing raw text
+                    await sendToAI(
+                        `I uploaded a PDF "${file.name}" (${data.pages} pages). Please extract all events and dates and propose adding them to my calendar.`,
+                        `[PDF content from ${file.name}]:\n${trimmed}`,
+                    );
                 }
             } catch (err: any) {
                 setError(`Failed to read PDF: ${err.message}`);
@@ -375,8 +379,10 @@ export default function AIChatTab({ roomId, roomName, lists, events, documents, 
         } else if (file.type.startsWith('text/') || file.name.endsWith('.csv') || file.name.endsWith('.ics')) {
             const text = await file.text();
             const trimmed = text.trim().slice(0, 12000);
-            setInput(`[File: ${file.name}]\n${trimmed}\n\nPlease extract all events, dates, and deadlines from this and add them to my calendar.`);
-            inputRef.current?.focus();
+            await sendToAI(
+                `I uploaded "${file.name}". Please extract all events and dates and propose adding them to my calendar.`,
+                `[File content from ${file.name}]:\n${trimmed}`,
+            );
         } else {
             setError('Please upload a PDF, text, or CSV file.');
         }
@@ -460,6 +466,12 @@ export default function AIChatTab({ roomId, roomName, lists, events, documents, 
                             color: '#3B82F6',
                             createdBy: user.uid,
                         });
+                        break;
+                    }
+                    case 'delete_event': {
+                        if (action.eventId) {
+                            await deleteEvent(roomId, action.eventId);
+                        }
                         break;
                     }
                     case 'create_document': {
@@ -592,23 +604,28 @@ export default function AIChatTab({ roomId, roomName, lists, events, documents, 
         inputRef.current?.focus();
     }
 
-    async function handleSend() {
-        const content = input.trim();
-        if (!content || isLoading) return;
+    async function sendToAI(visibleMessage: string, hiddenContext?: string) {
+        if (!visibleMessage.trim() || isLoading) return;
 
         setInput('');
         setError(null);
 
+        // Show the visible message in chat
         await addDoc(collection(db, 'rooms', roomId, 'aiMessages'), {
             role: 'user',
-            content,
+            content: visibleMessage,
             createdAt: serverTimestamp(),
         });
 
         setIsLoading(true);
 
+        // Build API message: visible message + hidden context if provided
+        const apiContent = hiddenContext
+            ? `${visibleMessage}\n\n--- EXTRACTED CONTENT (do not repeat this raw text back to the user) ---\n${hiddenContext}`
+            : visibleMessage;
+
         try {
-            const recentMessages = [...messages.slice(-20), { role: 'user' as const, content }];
+            const recentMessages = [...messages.slice(-20), { role: 'user' as const, content: apiContent }];
             const apiMessages = recentMessages.map(m => ({
                 role: m.role,
                 content: m.content,
@@ -623,7 +640,7 @@ export default function AIChatTab({ roomId, roomName, lists, events, documents, 
                         roomName,
                         members: members.map(m => ({ uid: m.uid, name: m.name || m.email?.split('@')[0] || 'Unknown' })),
                         lists: lists.map(l => ({ id: l.id, name: l.name, type: l.type || 'list' })),
-                        events: events.slice(0, 10).map(e => ({ title: e.title, date: e.date })),
+                        events: events.slice(0, 50).map(e => ({ id: e.id, title: e.title, date: e.date })),
                         documents: documents.map(d => ({ id: d.id, title: d.title || 'Untitled' })),
                         recipes: recipes.map(r => ({
                             id: r.id,
@@ -663,6 +680,12 @@ export default function AIChatTab({ roomId, roomName, lists, events, documents, 
             setIsLoading(false);
             inputRef.current?.focus();
         }
+    }
+
+    async function handleSend() {
+        const content = input.trim();
+        if (!content) return;
+        await sendToAI(content);
     }
 
     function handleChipClick(prompt: string) {

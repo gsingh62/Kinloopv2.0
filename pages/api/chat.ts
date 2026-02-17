@@ -36,10 +36,20 @@ TOOL USAGE RULES:
 - If the user's request is ambiguous, ask a brief clarifying question instead of guessing.
 
 DATE & EVENT EXTRACTION:
-- When the user shares a URL and asks to find events/dates, use fetch_events_from_url. Parse the result and call add_event for EACH date found. Present all found events in a numbered list before adding them.
-- When the user sends text from a PDF or pasted content (prefixed with "[PDF: filename]" or "[Pasted text]"), carefully parse ALL dates and events from it. Call add_event for each one. Show the user what you found and confirm.
-- For bulk events (e.g., a school calendar with 20+ dates), add all of them and present a summary.
+- When the user shares a URL and asks to find events/dates, use fetch_events_from_url. Parse the result to identify events.
+- When the user uploads a PDF or text file, the content is provided in a hidden section marked "EXTRACTED CONTENT". Do NOT repeat or display the raw extracted text. Instead, parse it for dates/events.
+- IMPORTANT: NEVER dump raw PDF/file text back to the user. Always parse it yourself and present a clean summary.
+- After parsing events from a PDF, URL, or text: Present the events as a clean numbered proposal list (title + date). Then ask: "Would you like me to add all of these to your calendar, or would you like to pick specific ones?" Wait for the user's confirmation before calling add_event.
+- Only call add_event AFTER the user confirms (says "yes", "add them all", "add 1, 3, 5", etc.).
 - Parse dates intelligently — handle formats like "March 15", "3/15/2026", "Mar 15 2026", "15th March", relative dates like "next Tuesday", date ranges like "April 7-11" (create start event).
+- For the school year context, infer the correct year (e.g., 2025-26 school year means Aug-Dec is 2025, Jan-Jun is 2026).
+
+EVENT DELETION:
+- When the user asks to delete calendar events, use delete_event with the event's Firestore ID from the room context.
+- The room context includes events with their IDs, titles, and dates. Match the user's request to the correct event(s).
+- If the user says "delete the last added events", "undo the calendar events", or similar, identify the relevant events from context and delete them.
+- If the user asks to delete events by date range or title pattern, find all matching events from context and delete each one.
+- Always confirm what you're deleting by listing the event titles before executing the deletions.
 
 RECIPE PRESENTATION:
 When presenting a recipe, format it beautifully with:
@@ -128,6 +138,21 @@ const tools: OpenAI.Chat.Completions.ChatCompletionTool[] = [
                     allDay: { type: 'boolean', description: 'Whether all-day event (default true if no time)' },
                 },
                 required: ['title', 'date'],
+            },
+        },
+    },
+    {
+        type: 'function',
+        function: {
+            name: 'delete_event',
+            description: 'Delete a calendar event by its ID. Use the event IDs from the room context. Can also match events by title and date if the user describes them.',
+            parameters: {
+                type: 'object',
+                properties: {
+                    eventId: { type: 'string', description: 'The Firestore document ID of the event to delete' },
+                    title: { type: 'string', description: 'Title of the deleted event (for confirmation display)' },
+                },
+                required: ['eventId', 'title'],
             },
         },
     },
@@ -486,6 +511,10 @@ function processToolCalls(toolCalls: OpenAI.Chat.Completions.ChatCompletionMessa
                 actions.push({ type: 'add_event', ...args });
                 toolResults.push({ tool_call_id: tc.id, content: `Created event "${args.title}" on ${args.date}${args.startTime ? ` at ${args.startTime}` : ''}` });
                 break;
+            case 'delete_event':
+                actions.push({ type: 'delete_event', ...args });
+                toolResults.push({ tool_call_id: tc.id, content: `Deleted event "${args.title}" (id: ${args.eventId})` });
+                break;
             case 'create_document':
                 actions.push({ type: 'create_document', ...args });
                 toolResults.push({ tool_call_id: tc.id, content: `Created document "${args.title}"` });
@@ -552,8 +581,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             roomContext.lists?.length ? roomContext.lists.map((l: any) => `"${l.name}" (id: ${l.id}, type: ${l.type || 'list'})`).join(', ') : 'none yet'
         }\n- Documents: ${
             roomContext.documents?.length ? roomContext.documents.map((d: any) => `"${d.title}" (id: ${d.id})`).join(', ') : 'none'
-        }\n- Upcoming events: ${
-            roomContext.events?.length ? roomContext.events.slice(0, 5).map((e: any) => `"${e.title}" on ${e.date}`).join(', ') : 'none'
+        }\n- Calendar events (with IDs for deletion): ${
+            roomContext.events?.length ? roomContext.events.map((e: any) => `"${e.title}" on ${e.date} (id: ${e.id})`).join(', ') : 'none'
         }\n- Saved recipes: ${
             roomContext.recipes?.length ? roomContext.recipes.map((r: any) => `"${r.title}"${r.isFavorite ? ' ★' : ''}`).join(', ') : 'none'
         }`
@@ -568,7 +597,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             tools,
             tool_choice: 'auto',
             temperature: 0.7,
-            max_tokens: 3000,
+            max_tokens: 4000,
         });
 
         let assistantMessage = completion.choices[0].message;
@@ -611,7 +640,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                 tools,
                 tool_choice: 'auto',
                 temperature: 0.7,
-                max_tokens: 3000,
+                max_tokens: 4000,
             });
 
             assistantMessage = nextCompletion.choices[0].message;

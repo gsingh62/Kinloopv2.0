@@ -5,7 +5,6 @@ import { doc, getDoc, updateDoc, arrayUnion, collection, getDocs, onSnapshot } f
 import { db, auth } from '../../lib/firebase';
 import {
     subscribeToMessages,
-    getLists,
     addListItem,
     deleteListItem,
     sendMessage,
@@ -43,7 +42,6 @@ export default function RoomPage() {
     const [room, setRoom] = useState<any>(null);
     const [activeTab, setActiveTab] = useState('lists');
     const [messages, setMessages] = useState<any[]>([]);
-    const [lists, setLists] = useState<any[]>([]);
     const [events, setEvents] = useState<any[]>([]);
     const [docContent, setDocContent] = useState('<p>Start writing...</p>');
     const [members, setMembers] = useState<RoomMember[]>([]);
@@ -96,7 +94,6 @@ export default function RoomPage() {
                     const existing = data.inviteCode;
                     const upper = existing.toUpperCase();
                     if (existing !== upper) {
-                        // Auto-fix mixed-case code to uppercase
                         await updateDoc(docRef, { inviteCode: upper });
                     }
                     setInviteCode(upper);
@@ -125,7 +122,7 @@ export default function RoomPage() {
             }
         };
         fetchRoom();
-    }, [router.isReady, router.query, roomId]);
+    }, [router.isReady, roomId]);
 
     useEffect(() => {
         if (!roomId) return;
@@ -204,10 +201,6 @@ export default function RoomPage() {
         }
     }, [roomId, activeTab]);
 
-    useEffect(() => {
-        if (!roomId) return;
-        getLists(roomId, setLists);
-    }, [roomId]);
 
     const handleAddEvent = async (title: string, date: string) => {
         if (typeof roomId !== 'string') return;

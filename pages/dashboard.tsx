@@ -1,11 +1,11 @@
 // pages/dashboard.tsx — Warm sunset themed dashboard
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { useRouter } from 'next/router';
 import { collection, query, where, getDocs, addDoc, serverTimestamp, updateDoc, doc, arrayUnion } from 'firebase/firestore';
 import { onAuthStateChanged, User, signOut } from 'firebase/auth';
 import { db, auth } from '../lib/firebase';
 import MobileRoomList from '../components/MobileRoomList';
-import { Plus, LogOut, Users, Link2, ChevronRight, X, Loader2 } from 'lucide-react';
+import { Plus, LogOut, Users, Link2, ChevronRight, X, Loader2, Sparkles, Mic, MicOff, Send } from 'lucide-react';
 import { nanoid } from 'nanoid';
 
 export default function RoomsPage() {
@@ -19,6 +19,45 @@ export default function RoomsPage() {
     const [joinCode, setJoinCode] = useState('');
     const [error, setError] = useState('');
     const [submitting, setSubmitting] = useState(false);
+    const [quickText, setQuickText] = useState('');
+    const [quickRoomId, setQuickRoomId] = useState('');
+    const [quickListening, setQuickListening] = useState(false);
+    const quickRecognitionRef = useRef<any>(null);
+
+    const toggleQuickListening = () => {
+        if (quickListening) {
+            quickRecognitionRef.current?.stop();
+            setQuickListening(false);
+            return;
+        }
+        const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+        if (!SR) { setError('Speech recognition not supported'); return; }
+        const recognition = new SR();
+        recognition.continuous = true;
+        recognition.interimResults = true;
+        recognition.lang = 'en-US';
+        let final = quickText;
+        recognition.onresult = (ev: any) => {
+            let interim = '';
+            for (let i = ev.resultIndex; i < ev.results.length; i++) {
+                if (ev.results[i].isFinal) final += (final ? ' ' : '') + ev.results[i][0].transcript;
+                else interim += ev.results[i][0].transcript;
+            }
+            setQuickText(final + (interim ? ' ' + interim : ''));
+        };
+        recognition.onerror = () => setQuickListening(false);
+        recognition.onend = () => setQuickListening(false);
+        quickRecognitionRef.current = recognition;
+        recognition.start();
+        setQuickListening(true);
+    };
+
+    const handleQuickAdd = () => {
+        if (!quickText.trim()) return;
+        const targetRoom = quickRoomId || rooms[0]?.id;
+        if (!targetRoom) return;
+        router.push(`/room/${targetRoom}?tab=ai&prompt=${encodeURIComponent(quickText.trim())}`);
+    };
 
     const fetchUserRooms = async (userId: string) => {
         const q = query(collection(db, 'rooms'), where('memberIds', 'array-contains', userId));
@@ -119,6 +158,56 @@ export default function RoomsPage() {
 
                 {/* Content */}
                 <div className="max-w-5xl mx-auto px-6 py-8">
+                    {/* Quick Add */}
+                    {rooms.length > 0 && (
+                        <div className="mb-6 p-4 bg-gradient-to-r from-violet-50 to-kin-50 border border-violet-200/50 rounded-2xl">
+                            <div className="flex items-center gap-2 mb-2.5">
+                                <Sparkles size={16} className="text-violet-500" />
+                                <span className="text-sm font-semibold text-warmgray-700">Quick Add</span>
+                                <span className="text-[11px] text-warmgray-400">— speak or type anything</span>
+                            </div>
+                            <div className="flex items-center gap-2">
+                                {rooms.length > 1 && (
+                                    <select
+                                        value={quickRoomId || rooms[0]?.id}
+                                        onChange={(e) => setQuickRoomId(e.target.value)}
+                                        className="px-3 py-2.5 bg-white border border-warmgray-200 rounded-xl text-xs text-warmgray-600 focus:outline-none focus:ring-2 focus:ring-violet-400"
+                                    >
+                                        {rooms.map((r: any) => (
+                                            <option key={r.id} value={r.id}>{r.name}</option>
+                                        ))}
+                                    </select>
+                                )}
+                                <button
+                                    onClick={toggleQuickListening}
+                                    className={`p-2.5 rounded-xl transition-colors ${
+                                        quickListening
+                                            ? 'bg-red-100 text-red-600 animate-pulse'
+                                            : 'text-warmgray-400 hover:text-violet-600 hover:bg-white'
+                                    }`}
+                                    title={quickListening ? 'Stop' : 'Voice input'}
+                                >
+                                    {quickListening ? <MicOff size={18} /> : <Mic size={18} />}
+                                </button>
+                                <input
+                                    type="text"
+                                    value={quickText}
+                                    onChange={(e) => setQuickText(e.target.value)}
+                                    onKeyDown={(e) => { if (e.key === 'Enter') handleQuickAdd(); }}
+                                    placeholder={quickListening ? 'Listening...' : '"Add milk to grocery list" or "Dentist Tuesday 2pm"'}
+                                    className="flex-1 px-4 py-2.5 bg-white border border-warmgray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-violet-400 placeholder-warmgray-400"
+                                />
+                                <button
+                                    onClick={handleQuickAdd}
+                                    disabled={!quickText.trim()}
+                                    className="p-2.5 bg-gradient-to-r from-violet-500 to-kin-600 text-white rounded-xl hover:from-violet-600 hover:to-kin-700 disabled:opacity-40 transition-all"
+                                >
+                                    <Send size={18} />
+                                </button>
+                            </div>
+                        </div>
+                    )}
+
                     <div className="flex items-center justify-between mb-6">
                         <h2 className="text-2xl font-bold text-warmgray-800">Your Rooms</h2>
                         <div className="flex gap-2">

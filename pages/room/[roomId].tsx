@@ -306,12 +306,23 @@ export default function RoomPage() {
         // Push notifications handle background/closed via /api/push in ListTab
     }, [addToast, handleTabSwitch]);
 
-    // Navigate to AI tab with a pre-filled prompt from other tabs
+    // Navigate to AI tab with a pre-filled prompt from other tabs or Quick Add
     const [pendingAIPrompt, setPendingAIPrompt] = useState<string | null>(null);
     const handleAskAI = useCallback((prompt: string) => {
         setPendingAIPrompt(prompt);
         handleTabSwitch('ai');
     }, [handleTabSwitch]);
+
+    // Handle Quick Add from dashboard (?tab=ai&prompt=...)
+    useEffect(() => {
+        if (!router.isReady) return;
+        const { tab, prompt } = router.query;
+        if (tab === 'ai' && typeof prompt === 'string' && prompt.trim()) {
+            setPendingAIPrompt(prompt.trim());
+            handleTabSwitch('ai');
+            router.replace(`/room/${roomId}`, undefined, { shallow: true });
+        }
+    }, [router.isReady]);
 
     const renderTabContent = () => {
         switch (activeTab) {

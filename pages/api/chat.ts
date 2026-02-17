@@ -12,6 +12,8 @@ const SYSTEM_PROMPT = `You are KinLoop AI, a warm and helpful family assistant b
 - Extracting recipes from URLs — saving them, creating shopping lists, scheduling cooking time
 - Helping choose from saved favorite recipes
 - Room management (leave room, remove members)
+- Extracting events/dates from URLs (school calendars, event pages, bookings)
+- Extracting events/dates from pasted text or PDF content (the app sends you extracted PDF text)
 
 PERSONALITY: You're friendly, concise, and practical — like a helpful family member. Use a warm tone but keep responses brief. Don't over-explain.
 
@@ -32,6 +34,12 @@ TOOL USAGE RULES:
 - When the user wants to leave a room, use leave_room. Confirm first.
 - When the user wants to remove a member, use remove_member. Only the room owner can do this.
 - If the user's request is ambiguous, ask a brief clarifying question instead of guessing.
+
+DATE & EVENT EXTRACTION:
+- When the user shares a URL and asks to find events/dates, use fetch_events_from_url. Parse the result and call add_event for EACH date found. Present all found events in a numbered list before adding them.
+- When the user sends text from a PDF or pasted content (prefixed with "[PDF: filename]" or "[Pasted text]"), carefully parse ALL dates and events from it. Call add_event for each one. Show the user what you found and confirm.
+- For bulk events (e.g., a school calendar with 20+ dates), add all of them and present a summary.
+- Parse dates intelligently — handle formats like "March 15", "3/15/2026", "Mar 15 2026", "15th March", relative dates like "next Tuesday", date ranges like "April 7-11" (create start event).
 
 RECIPE PRESENTATION:
 When presenting a recipe, format it beautifully with:
@@ -278,6 +286,20 @@ const tools: OpenAI.Chat.Completions.ChatCompletionTool[] = [
     {
         type: 'function',
         function: {
+            name: 'fetch_events_from_url',
+            description: 'Fetch a webpage and extract event/date information from it. Use when a user shares a URL and wants to find dates, events, or schedules on that page.',
+            parameters: {
+                type: 'object',
+                properties: {
+                    url: { type: 'string', description: 'The URL to fetch and extract events from' },
+                },
+                required: ['url'],
+            },
+        },
+    },
+    {
+        type: 'function',
+        function: {
             name: 'leave_room',
             description: 'Leave the current room. The current user will be removed from the room members.',
             parameters: {
@@ -378,6 +400,60 @@ async function fetchRecipeFromUrl(url: string): Promise<string> {
         return `Raw page text (no structured recipe data found, url: ${url}): ${textContent}`;
     } catch (error: any) {
         return `Error fetching URL: ${error.message}`;
+    }
+}
+
+async function fetchEventsFromUrl(url: string): Promise<string> {
+    try {
+        const response = await fetch(url, {
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (compatible; KinLoopBot/1.0)',
+                'Accept': 'text/html',
+            },
+        });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const html = await response.text();
+
+        // Try JSON-LD Event schema
+        const events: any[] = [];
+        const jsonLdMatch = html.match(/<script[^>]*type="application\/ld\+json"[^>]*>([\s\S]*?)<\/script>/gi);
+        if (jsonLdMatch) {
+            for (const match of jsonLdMatch) {
+                try {
+                    const jsonStr = match.replace(/<script[^>]*>/, '').replace(/<\/script>/, '');
+                    const data = JSON.parse(jsonStr);
+                    const items = Array.isArray(data) ? data : data['@graph'] ? data['@graph'] : [data];
+                    for (const item of items) {
+                        if (item['@type'] === 'Event' || item['@type']?.includes?.('Event')) {
+                            events.push({
+                                name: item.name,
+                                startDate: item.startDate,
+                                endDate: item.endDate,
+                                location: item.location?.name || item.location?.address || '',
+                                description: item.description?.slice(0, 200) || '',
+                            });
+                        }
+                    }
+                } catch { /* try next */ }
+            }
+        }
+
+        if (events.length > 0) {
+            return JSON.stringify({ source: 'structured', url, events });
+        }
+
+        // Fallback: extract text for AI to parse
+        const textContent = html
+            .replace(/<script[\s\S]*?<\/script>/gi, '')
+            .replace(/<style[\s\S]*?<\/style>/gi, '')
+            .replace(/<[^>]+>/g, ' ')
+            .replace(/\s+/g, ' ')
+            .trim()
+            .slice(0, 10000);
+
+        return JSON.stringify({ source: 'raw_text', url, text: textContent });
+    } catch (error: any) {
+        return JSON.stringify({ error: `Failed to fetch URL: ${error.message}` });
     }
 }
 
@@ -498,21 +574,27 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         let assistantMessage = completion.choices[0].message;
         const allActions: any[] = [];
 
-        // Handle up to 3 rounds of tool calls
+        // Handle up to 5 rounds of tool calls (more for bulk event extraction)
         let conversationMessages: any[] = [systemMessage, ...messages];
-        for (let round = 0; round < 3; round++) {
+        for (let round = 0; round < 5; round++) {
             if (!assistantMessage.tool_calls || assistantMessage.tool_calls.length === 0) break;
 
             conversationMessages.push(assistantMessage);
 
-            // Separate async tools (recipe fetch) from sync tools
-            const recipeCalls = assistantMessage.tool_calls.filter(tc => tc.function.name === 'fetch_recipe_from_url');
-            const otherCalls = assistantMessage.tool_calls.filter(tc => tc.function.name !== 'fetch_recipe_from_url');
+            // Separate async tools (fetches) from sync tools
+            const asyncToolNames = ['fetch_recipe_from_url', 'fetch_events_from_url'];
+            const asyncCalls = assistantMessage.tool_calls.filter(tc => asyncToolNames.includes(tc.function.name));
+            const otherCalls = assistantMessage.tool_calls.filter(tc => !asyncToolNames.includes(tc.function.name));
 
-            for (const rc of recipeCalls) {
-                const args = JSON.parse(rc.function.arguments);
-                const recipeData = await fetchRecipeFromUrl(args.url);
-                conversationMessages.push({ role: 'tool', tool_call_id: rc.id, content: recipeData });
+            for (const ac of asyncCalls) {
+                const args = JSON.parse(ac.function.arguments);
+                let result: string;
+                if (ac.function.name === 'fetch_recipe_from_url') {
+                    result = await fetchRecipeFromUrl(args.url);
+                } else {
+                    result = await fetchEventsFromUrl(args.url);
+                }
+                conversationMessages.push({ role: 'tool', tool_call_id: ac.id, content: result });
             }
 
             if (otherCalls.length > 0) {

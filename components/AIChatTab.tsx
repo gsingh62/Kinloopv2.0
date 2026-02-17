@@ -16,6 +16,7 @@ import {
     Sparkles, Send, Loader2, ChefHat, ListPlus, CalendarPlus, FileText,
     AlertCircle, Trash2, PenLine, Heart, BookOpen, Clock, Users as UsersIcon,
     CheckCircle2, Circle, Star, DoorOpen, UserMinus, ClipboardList, User,
+    Mic, MicOff, Paperclip, FileUp, X, Globe,
 } from 'lucide-react';
 
 interface AIChatTabProps {
@@ -54,6 +55,7 @@ function ActionBadge({ action }: { action: any }) {
         add_chore_to_calendar: { icon: CalendarPlus, color: 'sky', label: `Added "${action.choreName}" to calendar` },
         leave_room: { icon: DoorOpen, color: 'amber', label: 'Left the room' },
         remove_member: { icon: UserMinus, color: 'red', label: `Removed ${action.memberName}` },
+        fetch_events_from_url: { icon: Globe, color: 'sky', label: `Extracted events from URL` },
     };
 
     const info = iconMap[action.type];
@@ -259,6 +261,8 @@ const SUGGESTION_CHIPS = [
     { icon: ListPlus, label: 'Add to list', prompt: 'Add these items to my grocery list: ' },
     { icon: ClipboardList, label: 'Create chore board', prompt: 'Create a chore board called ' },
     { icon: CalendarPlus, label: 'Add event', prompt: 'Add an event for ' },
+    { icon: Globe, label: 'Events from URL', prompt: 'Extract all events and dates from this page: ' },
+    { icon: FileUp, label: 'PDF to calendar', prompt: '' },
     { icon: FileText, label: 'Plan something', prompt: 'Help me plan ' },
     { icon: Star, label: 'My recipes', prompt: 'Show me my saved recipes and help me pick what to cook' },
 ];
@@ -269,8 +273,13 @@ export default function AIChatTab({ roomId, roomName, lists, events, documents, 
     const [input, setInput] = useState('');
     const [isLoading, setIsLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
+    const [isListening, setIsListening] = useState(false);
+    const [pdfExtracting, setPdfExtracting] = useState(false);
+    const [pendingPdfName, setPendingPdfName] = useState<string | null>(null);
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const inputRef = useRef<HTMLInputElement>(null);
+    const fileInputRef = useRef<HTMLInputElement>(null);
+    const recognitionRef = useRef<any>(null);
     const isInitialLoad = useRef(true);
 
     useEffect(() => {
@@ -297,6 +306,85 @@ export default function AIChatTab({ roomId, roomName, lists, events, documents, 
             messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
         }
     }, [messages, isLoading]);
+
+    // ─── Voice Recognition ───
+    const toggleListening = () => {
+        if (isListening) {
+            recognitionRef.current?.stop();
+            setIsListening(false);
+            return;
+        }
+        const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+        if (!SpeechRecognition) {
+            setError('Speech recognition is not supported in this browser. Try Chrome or Safari.');
+            return;
+        }
+        const recognition = new SpeechRecognition();
+        recognition.continuous = true;
+        recognition.interimResults = true;
+        recognition.lang = 'en-US';
+        let finalTranscript = input;
+        recognition.onresult = (event: any) => {
+            let interim = '';
+            for (let i = event.resultIndex; i < event.results.length; i++) {
+                if (event.results[i].isFinal) {
+                    finalTranscript += (finalTranscript ? ' ' : '') + event.results[i][0].transcript;
+                } else {
+                    interim += event.results[i][0].transcript;
+                }
+            }
+            setInput(finalTranscript + (interim ? ' ' + interim : ''));
+        };
+        recognition.onerror = () => setIsListening(false);
+        recognition.onend = () => setIsListening(false);
+        recognitionRef.current = recognition;
+        recognition.start();
+        setIsListening(true);
+    };
+
+    // ─── PDF Text Extraction ───
+    const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+        const file = e.target.files?.[0];
+        if (!file) return;
+        if (fileInputRef.current) fileInputRef.current.value = '';
+
+        if (file.type === 'application/pdf') {
+            setPdfExtracting(true);
+            setPendingPdfName(file.name);
+            try {
+                const pdfjsLib = await import('pdfjs-dist');
+                pdfjsLib.GlobalWorkerOptions.workerSrc = `//cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.mjs`;
+                const arrayBuffer = await file.arrayBuffer();
+                const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+                let fullText = '';
+                for (let i = 1; i <= pdf.numPages; i++) {
+                    const page = await pdf.getPage(i);
+                    const content = await page.getTextContent();
+                    const pageText = content.items.map((item: any) => item.str).join(' ');
+                    fullText += pageText + '\n';
+                }
+                const trimmed = fullText.trim().slice(0, 12000);
+                if (!trimmed) {
+                    setError('Could not extract text from this PDF. It may be a scanned image.');
+                } else {
+                    setInput(`[PDF: ${file.name}]\n${trimmed}\n\nPlease extract all events, dates, and deadlines from this document and add them to my calendar.`);
+                    inputRef.current?.focus();
+                }
+            } catch (err: any) {
+                setError(`Failed to read PDF: ${err.message}`);
+            } finally {
+                setPdfExtracting(false);
+                setPendingPdfName(null);
+            }
+        } else if (file.type.startsWith('text/') || file.name.endsWith('.csv') || file.name.endsWith('.ics')) {
+            const text = await file.text();
+            const trimmed = text.trim().slice(0, 12000);
+            setInput(`[File: ${file.name}]\n${trimmed}\n\nPlease extract all events, dates, and deadlines from this and add them to my calendar.`);
+            inputRef.current?.focus();
+        } else {
+            setError('Please upload a PDF, text, or CSV file.');
+        }
+    };
 
     async function executeActions(actions: any[]) {
         const user = auth.currentUser;
@@ -582,6 +670,11 @@ export default function AIChatTab({ roomId, roomName, lists, events, documents, 
     }
 
     function handleChipClick(prompt: string) {
+        if (prompt === '') {
+            // PDF upload chip
+            fileInputRef.current?.click();
+            return;
+        }
         setInput(prompt);
         inputRef.current?.focus();
     }
@@ -787,14 +880,52 @@ export default function AIChatTab({ roomId, roomName, lists, events, documents, 
                     </div>
                 )}
 
-                <div className="flex items-center gap-2">
+                {/* PDF extraction indicator */}
+                {pdfExtracting && (
+                    <div className="flex items-center gap-2 mb-2 px-3 py-2 bg-violet-50 border border-violet-200 rounded-xl">
+                        <Loader2 size={14} className="animate-spin text-violet-500" />
+                        <span className="text-xs text-violet-600">Extracting text from {pendingPdfName}...</span>
+                    </div>
+                )}
+
+                {/* Listening indicator */}
+                {isListening && (
+                    <div className="flex items-center gap-2 mb-2 px-3 py-2 bg-red-50 border border-red-200 rounded-xl animate-pulse">
+                        <Mic size={14} className="text-red-500" />
+                        <span className="text-xs text-red-600">Listening... tap mic to stop</span>
+                    </div>
+                )}
+
+                <input ref={fileInputRef} type="file" accept=".pdf,.txt,.csv,.ics" className="hidden" onChange={handleFileUpload} />
+
+                <div className="flex items-center gap-1.5">
+                    <button
+                        onClick={() => fileInputRef.current?.click()}
+                        disabled={isLoading || pdfExtracting}
+                        className="p-2.5 rounded-xl text-warmgray-400 hover:text-violet-600 hover:bg-violet-50 transition-colors disabled:opacity-40"
+                        title="Upload PDF or text file"
+                    >
+                        <Paperclip size={18} />
+                    </button>
+                    <button
+                        onClick={toggleListening}
+                        disabled={isLoading}
+                        className={`p-2.5 rounded-xl transition-colors ${
+                            isListening
+                                ? 'bg-red-100 text-red-600 hover:bg-red-200'
+                                : 'text-warmgray-400 hover:text-violet-600 hover:bg-violet-50'
+                        } disabled:opacity-40`}
+                        title={isListening ? 'Stop listening' : 'Voice input'}
+                    >
+                        {isListening ? <MicOff size={18} /> : <Mic size={18} />}
+                    </button>
                     <input
                         ref={inputRef}
                         type="text"
                         value={input}
                         onChange={(e) => setInput(e.target.value)}
                         onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); } }}
-                        placeholder="Ask KinLoop AI anything..."
+                        placeholder={isListening ? 'Speak now...' : 'Ask KinLoop AI anything...'}
                         disabled={isLoading}
                         className="flex-1 px-4 py-2.5 bg-warmgray-50 border border-warmgray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent placeholder-warmgray-400 transition-all disabled:opacity-50"
                     />

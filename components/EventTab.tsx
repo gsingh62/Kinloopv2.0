@@ -645,10 +645,18 @@ export default function EventTab({ roomId, members = [] }: EventTabProps) {
     const [showGcalMenu, setShowGcalMenu] = useState(false);
     const gcalMenuRef = useRef<HTMLDivElement>(null);
     useClickOutside(gcalMenuRef, () => setShowGcalMenu(false));
+    const didAutoSync = useRef(false);
 
-    const currentUserId = auth.currentUser?.uid || '';
+    // Use auth state listener so currentUserId is reactive (not stale after redirects)
+    const [currentUserId, setCurrentUserId] = useState(auth.currentUser?.uid || '');
+    useEffect(() => {
+        const unsub = auth.onAuthStateChanged((user) => {
+            setCurrentUserId(user?.uid || '');
+        });
+        return () => unsub();
+    }, []);
 
-    // Check Google Calendar connection status
+    // Check Google Calendar connection status & auto-sync on load
     useEffect(() => {
         if (!currentUserId) return;
         fetch(`/api/google/status?uid=${currentUserId}`)
@@ -656,26 +664,33 @@ export default function EventTab({ roomId, members = [] }: EventTabProps) {
             .then(data => {
                 setGcalConnected(data.connected);
                 setGcalEmail(data.email || '');
+                // Auto-import from Google when already connected (on page load)
+                if (data.connected && roomId && !didAutoSync.current) {
+                    didAutoSync.current = true;
+                    handleGcalSync();
+                }
             })
             .catch(() => {});
     }, [currentUserId]);
 
     // Handle ?gcal=connected query param (after OAuth callback)
+    // Must wait for currentUserId to be set by the auth listener
     useEffect(() => {
-        if (typeof window === 'undefined') return;
+        if (typeof window === 'undefined' || !currentUserId || didAutoSync.current) return;
         const params = new URLSearchParams(window.location.search);
         if (params.get('gcal') === 'connected') {
+            didAutoSync.current = true;
             setGcalConnected(true);
-            setGcalSyncResult('Google Calendar connected! Syncing...');
-            // Auto-sync after connecting
-            handleGcalSync();
+            setGcalSyncResult('Google Calendar connected! Importing events...');
+            // Auto-sync after connecting — delayed to ensure state is ready
+            setTimeout(() => handleGcalSync(), 300);
             // Clean up URL
             const url = new URL(window.location.href);
             url.searchParams.delete('gcal');
             url.searchParams.delete('tab');
             window.history.replaceState({}, '', url.pathname);
         }
-    }, []);
+    }, [currentUserId]);
 
     // Subscribe to events
     useEffect(() => {
@@ -812,12 +827,16 @@ export default function EventTab({ roomId, members = [] }: EventTabProps) {
             if (data.imported) parts.push(`${data.imported} imported`);
             if (data.updated) parts.push(`${data.updated} updated`);
             if (data.removed) parts.push(`${data.removed} removed`);
-            setGcalSyncResult(parts.length ? `Synced: ${parts.join(', ')}` : 'Already up to date');
+            if (data.errors?.length) {
+                setGcalSyncResult(`Sync errors: ${data.errors.join('; ')}`);
+            } else {
+                setGcalSyncResult(parts.length ? `Synced: ${parts.join(', ')}` : 'Already up to date');
+            }
         } catch (err: any) {
             setGcalSyncResult(`Sync failed: ${err.message}`);
         } finally {
             setGcalSyncing(false);
-            setTimeout(() => setGcalSyncResult(null), 5000);
+            setTimeout(() => setGcalSyncResult(null), 8000);
         }
     };
 
@@ -833,6 +852,31 @@ export default function EventTab({ roomId, members = [] }: EventTabProps) {
             if (!res.ok) throw new Error(data.error);
         } catch (err: any) {
             console.error('Export to Google failed:', err);
+        }
+    };
+
+    const handleExportAllToGoogle = async () => {
+        if (!currentUserId || !roomId) return;
+        setGcalSyncing(true);
+        setGcalSyncResult(null);
+        try {
+            const res = await fetch('/api/google/export-all', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ uid: currentUserId, roomId }),
+            });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error);
+            const parts = [];
+            if (data.exported) parts.push(`${data.exported} exported`);
+            if (data.updated) parts.push(`${data.updated} updated`);
+            if (data.failed) parts.push(`${data.failed} failed`);
+            setGcalSyncResult(parts.length ? `Push to Google: ${parts.join(', ')}` : 'All events already synced');
+        } catch (err: any) {
+            setGcalSyncResult(`Push failed: ${err.message}`);
+        } finally {
+            setGcalSyncing(false);
+            setTimeout(() => setGcalSyncResult(null), 8000);
         }
     };
 
@@ -935,7 +979,15 @@ export default function EventTab({ roomId, members = [] }: EventTabProps) {
                                             className="w-full flex items-center gap-2.5 px-3 py-2.5 text-sm text-warmgray-700 hover:bg-warmgray-50 transition-colors disabled:opacity-50"
                                         >
                                             <RefreshCw size={15} className={gcalSyncing ? 'animate-spin' : ''} />
-                                            {gcalSyncing ? 'Syncing...' : 'Sync now'}
+                                            {gcalSyncing ? 'Syncing...' : 'Import from Google'}
+                                        </button>
+                                        <button
+                                            onClick={() => { setShowGcalMenu(false); handleExportAllToGoogle(); }}
+                                            disabled={gcalSyncing}
+                                            className="w-full flex items-center gap-2.5 px-3 py-2.5 text-sm text-warmgray-700 hover:bg-warmgray-50 transition-colors disabled:opacity-50"
+                                        >
+                                            <ExternalLink size={15} />
+                                            Push all to Google
                                         </button>
                                         <button
                                             onClick={handleGcalDisconnect}

@@ -147,7 +147,10 @@ export async function listCalendars(accessToken: string): Promise<GoogleCalendar
     const res = await fetch(`${GCAL_API}/users/me/calendarList`, {
         headers: { Authorization: `Bearer ${accessToken}` },
     });
-    if (!res.ok) throw new Error(`Failed to list calendars: ${res.status}`);
+    if (!res.ok) {
+        const errBody = await res.text();
+        throw new Error(`Failed to list calendars (${res.status}): ${errBody}`);
+    }
     const data = await res.json();
     return (data.items || []).filter((c: any) => c.accessRole === 'owner' || c.accessRole === 'writer');
 }
@@ -196,7 +199,10 @@ export async function listEvents(
         return listEvents(accessToken, calendarId, timeMin, timeMax);
     }
 
-    if (!res.ok) throw new Error(`Failed to list events: ${res.status}`);
+    if (!res.ok) {
+        const errBody = await res.text();
+        throw new Error(`Failed to list events (${res.status}): ${errBody}`);
+    }
     const data = await res.json();
     return {
         events: data.items || [],

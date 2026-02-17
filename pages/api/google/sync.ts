@@ -31,6 +31,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         let imported = 0;
         let updated = 0;
         let removed = 0;
+        const errors: string[] = [];
 
         for (const calendarId of calendarIds) {
             try {
@@ -104,16 +105,19 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
                     }
                 }
             } catch (calErr: any) {
+                const errMsg = calErr?.message || String(calErr);
                 console.error(`Sync error for calendar ${calendarId}:`, calErr);
+                errors.push(`Calendar ${calendarId}: ${errMsg}`);
             }
         }
 
         return res.status(200).json({
-            success: true,
+            success: errors.length === 0,
             imported,
             updated,
             removed,
             total: imported + updated,
+            errors: errors.length > 0 ? errors : undefined,
         });
     } catch (err: any) {
         console.error('Sync error:', err);

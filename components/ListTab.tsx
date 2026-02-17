@@ -1,17 +1,105 @@
-// components/ListTab.tsx — Lists with traditional + chore board modes
+// components/ListTab.tsx — Lists with traditional + enhanced chore board
 import {
     collection, doc, onSnapshot, addDoc, deleteDoc, updateDoc,
     query, orderBy, getDocs, serverTimestamp,
 } from 'firebase/firestore';
 import { db, auth } from '../lib/firebase';
-import { useEffect, useState, useRef } from 'react';
+import { useEffect, useState, useRef, useCallback } from 'react';
 import {
     Plus, Trash2, ChevronDown, CheckCircle2, Circle, ListTodo,
     MoreHorizontal, Pencil, X, Loader2, Archive, ClipboardList,
-    List, User, Clock, CalendarPlus, UserPlus, UserMinus,
+    List, User, Clock, CalendarPlus, UserPlus, UserMinus, GripVertical, Palette,
 } from 'lucide-react';
 import { addCalendarEvent } from '../lib/firestoreUtils';
+import {
+    DndContext, closestCenter, PointerSensor, TouchSensor, useSensor, useSensors,
+    DragOverlay, DragStartEvent, DragEndEvent,
+} from '@dnd-kit/core';
+import { SortableContext, verticalListSortingStrategy, useSortable } from '@dnd-kit/sortable';
+import { CSS } from '@dnd-kit/utilities';
 
+// ─── Chore Icon Detection ───
+const CHORE_ICONS: [RegExp, string][] = [
+    [/dish|plate|bowl|cup|kitchen|sink/i, '🍽️'],
+    [/laundry|wash|clothes|fold|iron/i, '🧺'],
+    [/trash|garbage|recycle|bin|waste/i, '🗑️'],
+    [/sweep|mop|floor|vacuum|clean/i, '🧹'],
+    [/wipe|scrub|bathroom|toilet|shower/i, '🧽'],
+    [/cook|dinner|lunch|breakfast|meal|food/i, '🍳'],
+    [/grocery|shop|store|buy|market/i, '🛒'],
+    [/dog|cat|pet|walk|feed.*pet|litter/i, '🐾'],
+    [/garden|water|plant|lawn|mow|yard/i, '🌿'],
+    [/bed|sheet|pillow|bedroom/i, '🛏️'],
+    [/car|drive|gas|oil|tire/i, '🚗'],
+    [/fix|repair|tool|build|hang/i, '🔧'],
+    [/mail|package|deliver|letter/i, '📦'],
+    [/organize|sort|tidy|declutter/i, '📐'],
+    [/homework|study|school|read/i, '📚'],
+    [/dust|polish|furniture/i, '✨'],
+    [/baby|diaper|kid|child/i, '👶'],
+    [/medicine|pill|doctor|health/i, '💊'],
+    [/call|phone|email|contact/i, '📞'],
+    [/pay|bill|bank|money/i, '💳'],
+];
+
+function getChoreIcon(content: string): string {
+    for (const [pattern, icon] of CHORE_ICONS) {
+        if (pattern.test(content)) return icon;
+    }
+    return '🏠';
+}
+
+// ─── Color Palette ───
+const CHORE_COLORS = [
+    { id: 'default', bg: 'bg-white', border: 'border-warmgray-100', label: 'Default' },
+    { id: 'blue', bg: 'bg-blue-50', border: 'border-blue-200', label: 'Blue' },
+    { id: 'green', bg: 'bg-emerald-50', border: 'border-emerald-200', label: 'Green' },
+    { id: 'amber', bg: 'bg-amber-50', border: 'border-amber-200', label: 'Amber' },
+    { id: 'rose', bg: 'bg-rose-50', border: 'border-rose-200', label: 'Rose' },
+    { id: 'violet', bg: 'bg-violet-50', border: 'border-violet-200', label: 'Violet' },
+    { id: 'cyan', bg: 'bg-cyan-50', border: 'border-cyan-200', label: 'Cyan' },
+    { id: 'orange', bg: 'bg-orange-50', border: 'border-orange-200', label: 'Orange' },
+];
+
+const COLOR_DOT_CLASSES: Record<string, string> = {
+    default: 'bg-warmgray-300',
+    blue: 'bg-blue-400',
+    green: 'bg-emerald-400',
+    amber: 'bg-amber-400',
+    rose: 'bg-rose-400',
+    violet: 'bg-violet-400',
+    cyan: 'bg-cyan-400',
+    orange: 'bg-orange-400',
+};
+
+function getColorClasses(colorId?: string) {
+    return CHORE_COLORS.find(c => c.id === colorId) || CHORE_COLORS[0];
+}
+
+// ─── Success Sound ───
+let audioCtx: AudioContext | null = null;
+function playSuccessSound() {
+    try {
+        if (!audioCtx) audioCtx = new AudioContext();
+        const ctx = audioCtx;
+        const now = ctx.currentTime;
+
+        // Two-note ascending chime
+        [523.25, 659.25].forEach((freq, i) => {
+            const osc = ctx.createOscillator();
+            const gain = ctx.createGain();
+            osc.type = 'sine';
+            osc.frequency.value = freq;
+            gain.gain.setValueAtTime(0.3, now + i * 0.12);
+            gain.gain.exponentialRampToValueAtTime(0.001, now + i * 0.12 + 0.35);
+            osc.connect(gain).connect(ctx.destination);
+            osc.start(now + i * 0.12);
+            osc.stop(now + i * 0.12 + 0.4);
+        });
+    } catch {}
+}
+
+// ─── Interfaces ───
 interface ListTabProps {
     roomId: string | null;
     roomName?: string;
@@ -35,8 +123,15 @@ export default function ListTab({ roomId, roomName, members = [], onActivity }: 
     const [editingListName, setEditingListName] = useState(false);
     const [editName, setEditName] = useState('');
     const [choreTimeEstimate, setChoreTimeEstimate] = useState('');
+    const [newChoreColor, setNewChoreColor] = useState('default');
+    const [activeId, setActiveId] = useState<string | null>(null);
     const inputRef = useRef<HTMLInputElement>(null);
     const menuRef = useRef<HTMLDivElement>(null);
+
+    const sensors = useSensors(
+        useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
+        useSensor(TouchSensor, { activationConstraint: { delay: 200, tolerance: 5 } }),
+    );
 
     useEffect(() => {
         const handler = (e: MouseEvent) => {
@@ -112,10 +207,13 @@ export default function ListTab({ roomId, roomName, members = [], onActivity }: 
                 data.assignedTo = '';
                 data.assignedToName = '';
                 data.timeEstimate = choreTimeEstimate ? parseInt(choreTimeEstimate) : 0;
+                data.color = newChoreColor;
+                data.sortOrder = items.length;
             }
             await addDoc(collection(db, 'rooms', roomId, 'lists', selectedListId, 'items'), data);
             setNewItem('');
             setChoreTimeEstimate('');
+            setNewChoreColor('default');
             inputRef.current?.focus();
             const user = auth.currentUser;
             if (user) {
@@ -132,9 +230,11 @@ export default function ListTab({ roomId, roomName, members = [], onActivity }: 
 
     const handleToggleItem = async (item: any) => {
         if (!roomId || !selectedListId) return;
+        const willComplete = !item.completed;
         await updateDoc(doc(db, 'rooms', roomId, 'lists', selectedListId, 'items', item.id), {
-            completed: !item.completed,
+            completed: willComplete,
         });
+        if (willComplete && isChoreBoard) playSuccessSound();
     };
 
     const handleDeleteItem = async (itemId: string) => {
@@ -176,6 +276,11 @@ export default function ListTab({ roomId, roomName, members = [], onActivity }: 
             assignedTo: user.uid,
             assignedToName: name,
         });
+    };
+
+    const handleChangeColor = async (itemId: string, colorId: string) => {
+        if (!roomId || !selectedListId) return;
+        await updateDoc(doc(db, 'rooms', roomId, 'lists', selectedListId, 'items', itemId), { color: colorId });
     };
 
     const handleAddToCalendar = async (item: any) => {
@@ -259,6 +364,63 @@ export default function ListTab({ roomId, roomName, members = [], onActivity }: 
         }
     };
 
+    // ─── Drag & Drop handlers ───
+    const handleDragStart = (event: DragStartEvent) => {
+        setActiveId(event.active.id as string);
+    };
+
+    const handleDragEnd = async (event: DragEndEvent) => {
+        setActiveId(null);
+        const { active, over } = event;
+        if (!over || !roomId || !selectedListId) return;
+
+        const draggedItem = items.find(i => i.id === active.id);
+        if (!draggedItem) return;
+
+        const overId = over.id as string;
+
+        // Dropped onto a zone (unassigned, member uid, or done)
+        if (overId.startsWith('zone-')) {
+            const zone = overId.replace('zone-', '');
+            if (zone === 'unassigned') {
+                await updateDoc(doc(db, 'rooms', roomId, 'lists', selectedListId, 'items', draggedItem.id), {
+                    assignedTo: '', assignedToName: '', completed: false,
+                });
+            } else if (zone === 'done') {
+                await updateDoc(doc(db, 'rooms', roomId, 'lists', selectedListId, 'items', draggedItem.id), {
+                    completed: true,
+                });
+                playSuccessSound();
+            } else {
+                const member = members.find(m => m.uid === zone);
+                if (member) {
+                    await updateDoc(doc(db, 'rooms', roomId, 'lists', selectedListId, 'items', draggedItem.id), {
+                        assignedTo: zone,
+                        assignedToName: member.name || member.email?.split('@')[0] || '',
+                        completed: false,
+                    });
+                }
+            }
+        } else {
+            // Dropped onto another item — take that item's assignment
+            const targetItem = items.find(i => i.id === overId);
+            if (targetItem && targetItem.id !== draggedItem.id) {
+                if (targetItem.completed) {
+                    await updateDoc(doc(db, 'rooms', roomId, 'lists', selectedListId, 'items', draggedItem.id), {
+                        completed: true,
+                    });
+                    playSuccessSound();
+                } else {
+                    await updateDoc(doc(db, 'rooms', roomId, 'lists', selectedListId, 'items', draggedItem.id), {
+                        assignedTo: targetItem.assignedTo || '',
+                        assignedToName: targetItem.assignedToName || '',
+                        completed: false,
+                    });
+                }
+            }
+        }
+    };
+
     // Group chores by assignment for board view
     const unassignedChores = items.filter(i => !i.assignedTo && !i.completed);
     const assignedGroups: Record<string, any[]> = {};
@@ -270,6 +432,9 @@ export default function ListTab({ roomId, roomName, members = [], onActivity }: 
             assignedGroups[item.assignedTo].push(item);
         }
     }
+
+    const activeItem = activeId ? items.find(i => i.id === activeId) : null;
+    const allItemIds = items.filter(i => !i.completed).map(i => i.id);
 
     return (
         <div className="max-w-2xl mx-auto">
@@ -415,102 +580,128 @@ export default function ListTab({ roomId, roomName, members = [], onActivity }: 
                 </div>
             ) : isChoreBoard ? (
                 /* ═══ CHORE BOARD VIEW ═══ */
-                <div>
-                    {/* Unassigned section */}
-                    <div className="mb-4">
-                        <h4 className="text-xs font-semibold text-warmgray-500 uppercase tracking-wide mb-2 flex items-center gap-1.5">
-                            <ClipboardList size={13} /> Unassigned ({unassignedChores.length})
-                        </h4>
-                        {unassignedChores.length === 0 && (
-                            <p className="text-xs text-warmgray-400 italic py-2">No unassigned chores</p>
-                        )}
-                        <div className="space-y-1.5">
-                            {unassignedChores.map(item => (
-                                <ChoreCard key={item.id} item={item} members={members} roomId={roomId!}
-                                    onToggle={() => handleToggleItem(item)}
-                                    onDelete={() => handleDeleteItem(item.id)}
-                                    onAssign={(uid) => handleAssignChore(item.id, uid)}
-                                    onTake={() => handleTakeChore(item.id)}
-                                    onAddToCalendar={() => handleAddToCalendar(item)}
+                <DndContext sensors={sensors} collisionDetection={closestCenter}
+                    onDragStart={handleDragStart} onDragEnd={handleDragEnd}>
+                    <div>
+                        {/* Unassigned section */}
+                        <DroppableZone id="zone-unassigned" label="Unassigned" icon={<ClipboardList size={13} />} count={unassignedChores.length}>
+                            <SortableContext items={unassignedChores.map(i => i.id)} strategy={verticalListSortingStrategy}>
+                                {unassignedChores.length === 0 && (
+                                    <p className="text-xs text-warmgray-400 italic py-3 text-center">Drag chores here or add new ones below</p>
+                                )}
+                                {unassignedChores.map(item => (
+                                    <SortableChoreCard key={item.id} item={item} members={members} roomId={roomId!}
+                                        onToggle={() => handleToggleItem(item)}
+                                        onDelete={() => handleDeleteItem(item.id)}
+                                        onAssign={(uid) => handleAssignChore(item.id, uid)}
+                                        onTake={() => handleTakeChore(item.id)}
+                                        onAddToCalendar={() => handleAddToCalendar(item)}
+                                        onChangeColor={(c) => handleChangeColor(item.id, c)}
+                                    />
+                                ))}
+                            </SortableContext>
+                        </DroppableZone>
+
+                        {/* Per-member columns */}
+                        {members.filter(m => m.uid !== '__none__').map(member => {
+                            const uid = member.uid;
+                            const chores = assignedGroups[uid] || [];
+                            const name = member.name || member.email?.split('@')[0] || 'Unknown';
+                            const initial = name[0]?.toUpperCase() || '?';
+                            return (
+                                <DroppableZone key={uid} id={`zone-${uid}`}
+                                    label={name} count={chores.length}
+                                    icon={
+                                        <div className="w-5 h-5 bg-kin-100 text-kin-600 rounded-full flex items-center justify-center text-[10px] font-bold">
+                                            {initial}
+                                        </div>
+                                    }>
+                                    <SortableContext items={chores.map(i => i.id)} strategy={verticalListSortingStrategy}>
+                                        {chores.length === 0 && (
+                                            <p className="text-xs text-warmgray-400 italic py-3 text-center">Drag chores here to assign to {name}</p>
+                                        )}
+                                        {chores.map(item => (
+                                            <SortableChoreCard key={item.id} item={item} members={members} roomId={roomId!}
+                                                onToggle={() => handleToggleItem(item)}
+                                                onDelete={() => handleDeleteItem(item.id)}
+                                                onAssign={(uid) => handleAssignChore(item.id, uid)}
+                                                onUnassign={() => handleUnassignChore(item.id)}
+                                                onAddToCalendar={() => handleAddToCalendar(item)}
+                                                onChangeColor={(c) => handleChangeColor(item.id, c)}
+                                            />
+                                        ))}
+                                    </SortableContext>
+                                </DroppableZone>
+                            );
+                        })}
+
+                        {/* Done section */}
+                        <DroppableZone id="zone-done" label="Done" icon={<CheckCircle2 size={13} className="text-green-500" />}
+                            count={doneChores.length} className="border-green-200 bg-green-50/30">
+                            {doneChores.map(item => (
+                                <div key={item.id} className="group flex items-center gap-3 px-3 py-2 rounded-xl bg-green-50/50">
+                                    <button onClick={() => handleToggleItem(item)}>
+                                        <CheckCircle2 size={18} className="text-green-500" />
+                                    </button>
+                                    <span className="text-lg mr-1">{getChoreIcon(item.content)}</span>
+                                    <span className="flex-1 text-sm line-through text-warmgray-400">{item.content}</span>
+                                    {item.assignedToName && <span className="text-[10px] text-warmgray-400">{item.assignedToName}</span>}
+                                    <button onClick={() => handleDeleteItem(item.id)} className="opacity-0 group-hover:opacity-100 p-1 text-warmgray-300 hover:text-red-500 rounded transition-all">
+                                        <Trash2 size={13} />
+                                    </button>
+                                </div>
+                            ))}
+                            {doneChores.length === 0 && (
+                                <p className="text-xs text-warmgray-400 italic py-3 text-center">Drag chores here to mark as done</p>
+                            )}
+                        </DroppableZone>
+
+                        {/* Drag overlay */}
+                        <DragOverlay>
+                            {activeItem && (
+                                <div className="opacity-90 shadow-xl rounded-xl">
+                                    <ChoreCardContent item={activeItem} />
+                                </div>
+                            )}
+                        </DragOverlay>
+                    </div>
+
+                    {/* Add chore */}
+                    <div className="mt-4 space-y-2">
+                        <div className="flex gap-2">
+                            <div className="flex-1 flex gap-2">
+                                <input ref={inputRef} type="text" placeholder="Add a chore..."
+                                    className="flex-1 px-4 py-3 bg-white border border-warmgray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-kin-500 focus:border-transparent placeholder-warmgray-400 transition-all"
+                                    value={newItem} onChange={(e) => setNewItem(e.target.value)}
+                                    onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); handleAddItem(); } }}
+                                />
+                                <input type="number" placeholder="min" min="0" step="5"
+                                    className="w-16 px-2 py-3 bg-white border border-warmgray-200 rounded-xl text-sm text-center focus:outline-none focus:ring-2 focus:ring-kin-500 placeholder-warmgray-400"
+                                    value={choreTimeEstimate} onChange={e => setChoreTimeEstimate(e.target.value)}
+                                    title="Time estimate in minutes"
+                                />
+                            </div>
+                            <button onClick={handleAddItem} disabled={!newItem.trim() || addingItem}
+                                className="px-4 py-3 bg-gradient-to-r from-kin-500 to-kin-600 text-white rounded-xl text-sm font-medium hover:from-kin-600 hover:to-kin-700 disabled:opacity-50 transition-all flex items-center gap-1.5">
+                                {addingItem ? <Loader2 size={16} className="animate-spin" /> : <Plus size={16} />}
+                                <span className="hidden sm:inline">Add</span>
+                            </button>
+                        </div>
+                        {/* Color picker for new chore */}
+                        <div className="flex items-center gap-1.5 px-1">
+                            <Palette size={12} className="text-warmgray-400" />
+                            <span className="text-[10px] text-warmgray-400 mr-1">Color:</span>
+                            {CHORE_COLORS.map(c => (
+                                <button key={c.id} onClick={() => setNewChoreColor(c.id)}
+                                    className={`w-5 h-5 rounded-full border-2 transition-all ${COLOR_DOT_CLASSES[c.id]} ${
+                                        newChoreColor === c.id ? 'border-warmgray-800 scale-125' : 'border-transparent hover:scale-110'
+                                    }`}
+                                    title={c.label}
                                 />
                             ))}
                         </div>
                     </div>
-
-                    {/* Per-member columns */}
-                    {Object.keys(assignedGroups).length > 0 && (
-                        <div className="space-y-4 mb-4">
-                            {Object.entries(assignedGroups).map(([uid, chores]) => {
-                                const member = members.find(m => m.uid === uid);
-                                const name = member?.name || member?.email?.split('@')[0] || chores[0]?.assignedToName || 'Unknown';
-                                const initial = name[0]?.toUpperCase() || '?';
-                                return (
-                                    <div key={uid}>
-                                        <h4 className="text-xs font-semibold text-warmgray-500 uppercase tracking-wide mb-2 flex items-center gap-1.5">
-                                            <div className="w-5 h-5 bg-kin-100 text-kin-600 rounded-full flex items-center justify-center text-[10px] font-bold">
-                                                {initial}
-                                            </div>
-                                            {name} ({chores.length})
-                                        </h4>
-                                        <div className="space-y-1.5">
-                                            {chores.map(item => (
-                                                <ChoreCard key={item.id} item={item} members={members} roomId={roomId!}
-                                                    onToggle={() => handleToggleItem(item)}
-                                                    onDelete={() => handleDeleteItem(item.id)}
-                                                    onAssign={(uid) => handleAssignChore(item.id, uid)}
-                                                    onUnassign={() => handleUnassignChore(item.id)}
-                                                    onAddToCalendar={() => handleAddToCalendar(item)}
-                                                />
-                                            ))}
-                                        </div>
-                                    </div>
-                                );
-                            })}
-                        </div>
-                    )}
-
-                    {/* Done section */}
-                    {doneChores.length > 0 && (
-                        <div className="mb-4">
-                            <h4 className="text-xs font-semibold text-green-600 uppercase tracking-wide mb-2 flex items-center gap-1.5">
-                                <CheckCircle2 size={13} /> Done ({doneChores.length})
-                            </h4>
-                            <div className="space-y-1">
-                                {doneChores.map(item => (
-                                    <div key={item.id} className="group flex items-center gap-3 px-3 py-2 rounded-xl bg-green-50/50">
-                                        <button onClick={() => handleToggleItem(item)}><CheckCircle2 size={18} className="text-green-500" /></button>
-                                        <span className="flex-1 text-sm line-through text-warmgray-400">{item.content}</span>
-                                        {item.assignedToName && <span className="text-[10px] text-warmgray-400">{item.assignedToName}</span>}
-                                        <button onClick={() => handleDeleteItem(item.id)} className="opacity-0 group-hover:opacity-100 p-1 text-warmgray-300 hover:text-red-500 rounded transition-all">
-                                            <Trash2 size={13} />
-                                        </button>
-                                    </div>
-                                ))}
-                            </div>
-                        </div>
-                    )}
-
-                    {/* Add chore */}
-                    <div className="flex gap-2">
-                        <div className="flex-1 flex gap-2">
-                            <input ref={inputRef} type="text" placeholder="Add a chore..."
-                                className="flex-1 px-4 py-3 bg-white border border-warmgray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-kin-500 focus:border-transparent placeholder-warmgray-400 transition-all"
-                                value={newItem} onChange={(e) => setNewItem(e.target.value)}
-                                onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); handleAddItem(); } }}
-                            />
-                            <input type="number" placeholder="min" min="0" step="5"
-                                className="w-16 px-2 py-3 bg-white border border-warmgray-200 rounded-xl text-sm text-center focus:outline-none focus:ring-2 focus:ring-kin-500 placeholder-warmgray-400"
-                                value={choreTimeEstimate} onChange={e => setChoreTimeEstimate(e.target.value)}
-                                title="Time estimate in minutes"
-                            />
-                        </div>
-                        <button onClick={handleAddItem} disabled={!newItem.trim() || addingItem}
-                            className="px-4 py-3 bg-gradient-to-r from-kin-500 to-kin-600 text-white rounded-xl text-sm font-medium hover:from-kin-600 hover:to-kin-700 disabled:opacity-50 transition-all flex items-center gap-1.5">
-                            {addingItem ? <Loader2 size={16} className="animate-spin" /> : <Plus size={16} />}
-                            <span className="hidden sm:inline">Add</span>
-                        </button>
-                    </div>
-                </div>
+                </DndContext>
             ) : (
                 /* ═══ TRADITIONAL LIST VIEW ═══ */
                 <>
@@ -557,9 +748,65 @@ export default function ListTab({ roomId, roomName, members = [], onActivity }: 
     );
 }
 
+/* ═══ Droppable Zone ═══ */
+function DroppableZone({ id, label, icon, count, className, children }: {
+    id: string; label: string; icon: React.ReactNode; count: number;
+    className?: string; children: React.ReactNode;
+}) {
+    const { setNodeRef, isOver } = useSortable({ id, data: { type: 'zone' } });
+    return (
+        <div ref={setNodeRef} className={`mb-4 p-3 rounded-2xl border-2 border-dashed transition-all ${
+            isOver ? 'border-kin-400 bg-kin-50/50' : `border-warmgray-200 ${className || 'bg-warmgray-50/30'}`
+        }`}>
+            <h4 className="text-xs font-semibold text-warmgray-500 uppercase tracking-wide mb-2 flex items-center gap-1.5">
+                {icon} {label} ({count})
+            </h4>
+            <div className="space-y-1.5 min-h-[20px]">
+                {children}
+            </div>
+        </div>
+    );
+}
+
+/* ═══ Sortable Chore Card ═══ */
+function SortableChoreCard(props: {
+    item: any; members: any[]; roomId: string;
+    onToggle: () => void; onDelete: () => void;
+    onAssign?: (uid: string) => void; onTake?: () => void;
+    onUnassign?: () => void; onAddToCalendar: () => void;
+    onChangeColor: (colorId: string) => void;
+}) {
+    const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: props.item.id });
+    const style = {
+        transform: CSS.Transform.toString(transform),
+        transition,
+        opacity: isDragging ? 0.4 : 1,
+    };
+
+    return (
+        <div ref={setNodeRef} style={style}>
+            <ChoreCard {...props} dragListeners={listeners} dragAttributes={attributes} />
+        </div>
+    );
+}
+
+/* ═══ Chore Card Content (for drag overlay) ═══ */
+function ChoreCardContent({ item }: { item: any }) {
+    const color = getColorClasses(item.color);
+    return (
+        <div className={`${color.bg} border ${color.border} rounded-xl p-3`}>
+            <div className="flex items-center gap-2.5">
+                <span className="text-xl">{getChoreIcon(item.content)}</span>
+                <p className="text-sm text-warmgray-800 font-medium flex-1">{item.content}</p>
+            </div>
+        </div>
+    );
+}
+
 /* ═══ Chore Card Component ═══ */
 function ChoreCard({
-    item, members, roomId, onToggle, onDelete, onAssign, onTake, onUnassign, onAddToCalendar,
+    item, members, roomId, onToggle, onDelete, onAssign, onTake, onUnassign, onAddToCalendar, onChangeColor,
+    dragListeners, dragAttributes,
 }: {
     item: any;
     members: { uid: string; name?: string; email?: string }[];
@@ -570,25 +817,43 @@ function ChoreCard({
     onTake?: () => void;
     onUnassign?: () => void;
     onAddToCalendar: () => void;
+    onChangeColor: (colorId: string) => void;
+    dragListeners?: any;
+    dragAttributes?: any;
 }) {
     const [showAssign, setShowAssign] = useState(false);
+    const [showColors, setShowColors] = useState(false);
     const currentUid = auth.currentUser?.uid;
-    const isAssignedToMe = item.assignedTo === currentUid;
+    const color = getColorClasses(item.color);
 
     return (
-        <div className="bg-white border border-warmgray-100 rounded-xl p-3 hover:border-warmgray-200 shadow-sm transition-all group">
-            <div className="flex items-start gap-2.5">
-                <button onClick={onToggle} className="flex-shrink-0 mt-0.5">
+        <div className={`${color.bg} border ${color.border} rounded-xl p-3 hover:shadow-md shadow-sm transition-all group`}>
+            <div className="flex items-start gap-2">
+                {/* Drag handle */}
+                <button {...dragListeners} {...dragAttributes}
+                    className="flex-shrink-0 mt-1 cursor-grab active:cursor-grabbing text-warmgray-300 hover:text-warmgray-500 touch-none">
+                    <GripVertical size={16} />
+                </button>
+
+                {/* Checkmark button */}
+                <button onClick={onToggle} className="flex-shrink-0 mt-0.5 transition-transform hover:scale-110">
                     {item.completed
-                        ? <CheckCircle2 size={18} className="text-green-500" />
-                        : <Circle size={18} className="text-warmgray-300 hover:text-kin-400" />
+                        ? <CheckCircle2 size={22} className="text-green-500" />
+                        : <div className="w-[22px] h-[22px] rounded-full border-2 border-warmgray-300 hover:border-kin-400 flex items-center justify-center transition-colors">
+                            <div className="w-2.5 h-2.5 rounded-full bg-transparent group-hover:bg-kin-200 transition-colors" />
+                          </div>
                     }
                 </button>
+
+                {/* Icon + Content */}
                 <div className="flex-1 min-w-0">
-                    <p className="text-sm text-warmgray-800 font-medium">{item.content}</p>
-                    <div className="flex items-center gap-2 mt-1 flex-wrap">
+                    <div className="flex items-center gap-2">
+                        <span className="text-xl flex-shrink-0">{getChoreIcon(item.content)}</span>
+                        <p className="text-sm text-warmgray-800 font-medium">{item.content}</p>
+                    </div>
+                    <div className="flex items-center gap-2 mt-1.5 flex-wrap">
                         {item.timeEstimate > 0 && (
-                            <span className="flex items-center gap-0.5 text-[10px] text-warmgray-500 bg-warmgray-50 px-1.5 py-0.5 rounded-full">
+                            <span className="flex items-center gap-0.5 text-[10px] text-warmgray-500 bg-warmgray-100/80 px-1.5 py-0.5 rounded-full">
                                 <Clock size={10} /> {item.timeEstimate}min
                             </span>
                         )}
@@ -599,7 +864,12 @@ function ChoreCard({
                         )}
                     </div>
                 </div>
-                <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-all">
+
+                {/* Actions */}
+                <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-all flex-shrink-0">
+                    <button onClick={() => setShowColors(!showColors)} className="p-1 text-warmgray-400 hover:text-violet-600 rounded" title="Change color">
+                        <Palette size={14} />
+                    </button>
                     {!item.assignedTo && onTake && (
                         <button onClick={onTake} className="p-1 text-warmgray-400 hover:text-kin-600 rounded" title="Take this chore">
                             <UserPlus size={14} />
@@ -623,6 +893,20 @@ function ChoreCard({
                     </button>
                 </div>
             </div>
+
+            {/* Color picker */}
+            {showColors && (
+                <div className="mt-2 flex items-center gap-1.5 px-8">
+                    {CHORE_COLORS.map(c => (
+                        <button key={c.id} onClick={() => { onChangeColor(c.id); setShowColors(false); }}
+                            className={`w-6 h-6 rounded-full border-2 transition-all ${COLOR_DOT_CLASSES[c.id]} ${
+                                item.color === c.id ? 'border-warmgray-800 scale-125' : 'border-white hover:scale-110 shadow-sm'
+                            }`}
+                            title={c.label}
+                        />
+                    ))}
+                </div>
+            )}
 
             {/* Assign dropdown */}
             {showAssign && onAssign && (

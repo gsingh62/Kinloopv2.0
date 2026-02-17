@@ -90,6 +90,33 @@ export async function saveDoc(roomId: string, docId: string, content: any, userI
 }
 
 
+// ─── Room Member Type ───
+
+export interface RoomMember {
+    uid: string;
+    email: string;
+    name?: string;
+    createdAt?: string;
+}
+
+/** Resolve a list of UIDs to RoomMember objects by fetching from the users collection */
+export async function resolveMembers(memberIds: string[]): Promise<RoomMember[]> {
+    if (!memberIds.length) return [];
+    const usersSnapshot = await getDocs(collection(db, 'users'));
+    const allUsers = usersSnapshot.docs.map(d => ({ uid: d.id, ...d.data() } as RoomMember));
+    return allUsers.filter(u => memberIds.includes(u.uid));
+}
+
+/** Convert a RoomMember to an EventParticipant */
+export function memberToParticipant(member: RoomMember): EventParticipant {
+    return {
+        uid: member.uid,
+        email: member.email,
+        name: member.name || member.email?.split('@')[0] || 'User',
+        rsvp: 'needsAction',
+    };
+}
+
 // ─── Enhanced Calendar Event Types ───
 
 export interface EventParticipant {

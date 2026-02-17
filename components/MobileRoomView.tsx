@@ -3,10 +3,11 @@ import React, { useState } from 'react';
 import { useRouter } from 'next/router';
 import { auth } from '../lib/firebase';
 import { ArrowLeft, Share2, Users, Copy, Check, ChevronDown, DoorOpen, Trash2, UserMinus } from 'lucide-react';
+import type { RoomMember } from '../lib/firestoreUtils';
 
 interface MobileRoomViewProps {
     roomName: string;
-    members: any[];
+    members: RoomMember[];
     inviteCode?: string;
     children: React.ReactNode;
     onGetInviteCode?: () => void;

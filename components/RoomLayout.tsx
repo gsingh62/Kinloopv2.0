@@ -8,12 +8,13 @@ import {
     Copy, Check, LogOut, PanelLeftOpen, PanelLeftClose,
     MoreVertical, DoorOpen, Trash2, UserMinus, Users, X,
 } from 'lucide-react';
+import type { RoomMember } from '../lib/firestoreUtils';
 
 interface RoomLayoutProps {
     children: ReactNode;
     roomTitle?: string;
     inviteCode?: string;
-    members?: any[];
+    members?: RoomMember[];
     onGetInviteCode?: () => void;
     showInviteButton?: boolean;
     isOwner?: boolean;

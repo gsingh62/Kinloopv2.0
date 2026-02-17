@@ -10,7 +10,7 @@ import {
     MoreHorizontal, Pencil, X, Loader2, Archive, ClipboardList,
     List, User, Clock, CalendarPlus, UserPlus, UserMinus, GripVertical, Palette,
 } from 'lucide-react';
-import { addCalendarEvent } from '../lib/firestoreUtils';
+import { addCalendarEvent, type RoomMember } from '../lib/firestoreUtils';
 import {
     DndContext, closestCenter, PointerSensor, TouchSensor, useSensor, useSensors,
     DragOverlay, DragStartEvent, DragEndEvent,
@@ -103,7 +103,7 @@ function playSuccessSound() {
 interface ListTabProps {
     roomId: string | null;
     roomName?: string;
-    members?: { uid: string; name?: string; email?: string }[];
+    members?: RoomMember[];
     onAddItem?: (text: string) => void;
     onDeleteItem?: (itemId: string) => void;
     onActivity?: (activity: { type: string; detail: string }) => void;
@@ -770,7 +770,7 @@ function DroppableZone({ id, label, icon, count, className, children }: {
 
 /* ═══ Sortable Chore Card ═══ */
 function SortableChoreCard(props: {
-    item: any; members: any[]; roomId: string;
+    item: any; members: RoomMember[]; roomId: string;
     onToggle: () => void; onDelete: () => void;
     onAssign?: (uid: string) => void; onTake?: () => void;
     onUnassign?: () => void; onAddToCalendar: () => void;
@@ -809,7 +809,7 @@ function ChoreCard({
     dragListeners, dragAttributes,
 }: {
     item: any;
-    members: { uid: string; name?: string; email?: string }[];
+    members: RoomMember[];
     roomId: string;
     onToggle: () => void;
     onDelete: () => void;

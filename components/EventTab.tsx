@@ -6,7 +6,9 @@ import {
     CalendarEventInput,
     EventParticipant,
     EventVisibility,
+    RoomMember,
     canUserSeeEvent,
+    memberToParticipant,
     subscribeToEvents,
     addCalendarEvent,
     updateCalendarEvent,
@@ -67,14 +69,14 @@ const DAY_LABELS_SHORT = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
 // ─── Props ───
 interface EventTabProps {
     roomId: string;
-    members?: { uid: string; name?: string; email: string }[];
+    members?: RoomMember[];
 }
 
 // ─── Event Form Modal ───
 interface EventFormProps {
     initialDate?: string;
     event?: CalendarEvent;
-    members: { uid: string; name?: string; email: string }[];
+    members: RoomMember[];
     onSave: (event: CalendarEventInput) => void;
     onDelete?: () => void;
     onClose: () => void;
@@ -103,7 +105,8 @@ function EventFormModal({ initialDate, event, members, onSave, onDelete, onClose
         if (event?.assignedTo?.length) {
             return event.assignedTo.map(uid => {
                 const m = members.find(mb => mb.uid === uid);
-                return { uid, email: m?.email || '', name: m?.name || m?.email?.split('@')[0] || 'User' };
+                if (m) return memberToParticipant(m);
+                return { uid, email: '', name: 'User' };
             });
         }
         return [];
@@ -116,11 +119,11 @@ function EventFormModal({ initialDate, event, members, onSave, onDelete, onClose
     const [visibleTo, setVisibleTo] = useState<string[]>(event?.visibleTo || []);
     const [showVisDropdown, setShowVisDropdown] = useState(false);
 
-    const toggleParticipant = (member: { uid: string; name?: string; email: string }) => {
+    const toggleParticipant = (member: RoomMember) => {
         setParticipants(prev => {
             const exists = prev.some(p => p.uid === member.uid);
             if (exists) return prev.filter(p => p.uid !== member.uid);
-            return [...prev, { uid: member.uid, email: member.email, name: member.name || member.email?.split('@')[0] || 'User', rsvp: 'needsAction' }];
+            return [...prev, memberToParticipant(member)];
         });
     };
 
@@ -288,6 +291,7 @@ function EventFormModal({ initialDate, event, members, onSave, onDelete, onClose
                                             key={m.uid}
                                             type="button"
                                             onClick={() => toggleParticipant(m)}
+                                            title={m.email}
                                             className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium transition-all ${
                                                 selected
                                                     ? 'bg-kin-100 text-kin-700 ring-1 ring-kin-300'
@@ -295,7 +299,10 @@ function EventFormModal({ initialDate, event, members, onSave, onDelete, onClose
                                             }`}
                                         >
                                             {selected && <Check size={12} />}
-                                            {displayName}
+                                            <span>{displayName}</span>
+                                            {selected && m.email && (
+                                                <span className="text-[10px] text-kin-500 opacity-75">{m.email}</span>
+                                            )}
                                         </button>
                                     );
                                 })}
@@ -434,7 +441,7 @@ function EventFormModal({ initialDate, event, members, onSave, onDelete, onClose
 // ─── Event Detail Sheet ───
 interface EventDetailProps {
     event: CalendarEvent;
-    members: { uid: string; name?: string; email: string }[];
+    members: RoomMember[];
     onEdit: () => void;
     onDelete: () => void;
     onClose: () => void;
@@ -453,7 +460,8 @@ function EventDetailSheet({ event, members, onEdit, onDelete, onClose }: EventDe
         ? event.participants
         : (event.assignedTo || []).map(uid => {
             const m = members.find(mb => mb.uid === uid);
-            return { uid, email: m?.email || '', name: m?.name || m?.email?.split('@')[0] || 'User' };
+            if (m) return memberToParticipant(m);
+            return { uid, email: '', name: 'User' };
         });
 
     const visLabel = VISIBILITY_OPTIONS.find(v => v.value === (event.visibility || 'everyone'));
@@ -919,11 +927,12 @@ export default function EventTab({ roomId, members = [] }: EventTabProps) {
                                                     </p>
                                                 </div>
                                                 {(() => {
-                                                    const pList = ev.participants?.length
+                                                    const pList: EventParticipant[] = ev.participants?.length
                                                         ? ev.participants
                                                         : (ev.assignedTo || []).map(uid => {
                                                             const m = members.find(mb => mb.uid === uid);
-                                                            return { uid, email: m?.email || '', name: m?.name };
+                                                            if (m) return memberToParticipant(m);
+                                                            return { uid, email: '', name: 'User' } as EventParticipant;
                                                         });
                                                     if (!pList.length) return null;
                                                     return (

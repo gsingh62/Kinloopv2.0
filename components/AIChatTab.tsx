@@ -10,6 +10,7 @@ import {
     toggleRecipeFavorite, updateRecipeCompletedSteps,
     leaveRoom, removeMember, assignChore,
     type Recipe,
+    type RoomMember,
 } from '../lib/firestoreUtils';
 import { useRouter } from 'next/router';
 import {
@@ -26,7 +27,7 @@ interface AIChatTabProps {
     events: { id: string; title: string; date: string }[];
     documents: { id: string; title?: string; [key: string]: any }[];
     recipes: Recipe[];
-    members?: { uid: string; name?: string; email?: string }[];
+    members?: RoomMember[];
 }
 
 interface AIMessage {

@@ -20,6 +20,7 @@ import {
     removeMember,
     type Recipe,
     type MessageAttachment,
+    type RoomMember,
 } from '../../lib/firestoreUtils';
 import ChatTab from '../../components/ChatTab';
 import ListTab from '../../components/ListTab';
@@ -45,7 +46,7 @@ export default function RoomPage() {
     const [lists, setLists] = useState<any[]>([]);
     const [events, setEvents] = useState<any[]>([]);
     const [docContent, setDocContent] = useState('<p>Start writing...</p>');
-    const [members, setMembers] = useState<any[]>([]);
+    const [members, setMembers] = useState<RoomMember[]>([]);
     const [inviteCode, setInviteCode] = useState('');
     const [selectedDocId, setSelectedDocId] = useState<string | null>(null);
     const [documents, setDocuments] = useState<any[]>([]);
@@ -110,7 +111,15 @@ export default function RoomPage() {
                 }
                 if (data.memberIds?.length) {
                     const usersSnapshot = await getDocs(collection(db, 'users'));
-                    const allUsers = usersSnapshot.docs.map(doc => ({ uid: doc.id, ...doc.data() }));
+                    const allUsers: RoomMember[] = usersSnapshot.docs.map(d => {
+                        const uData = d.data();
+                        return {
+                            uid: d.id,
+                            email: uData.email || '',
+                            name: uData.name || uData.email?.split('@')[0] || '',
+                            createdAt: uData.createdAt,
+                        };
+                    });
                     setMembers(allUsers.filter(u => data.memberIds.includes(u.uid)));
                 }
             }

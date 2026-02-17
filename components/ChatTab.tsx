@@ -4,14 +4,14 @@ import EmojiPicker from 'emoji-picker-react';
 import { auth } from '../lib/firebase';
 import { Smile, Send, MessageCircle, CheckCheck, Check, Paperclip, Image as ImageIcon, FileText, X, Loader2, Download } from 'lucide-react';
 import type { ReadReceipt, PresenceData } from '../lib/presenceUtils';
-import type { MessageAttachment } from '../lib/firestoreUtils';
+import type { MessageAttachment, RoomMember } from '../lib/firestoreUtils';
 
 interface ChatTabProps {
     messages: any[];
     onSend: (content: string, attachments?: MessageAttachment[]) => void;
     readReceipts?: ReadReceipt[];
     presence?: PresenceData[];
-    members?: { uid: string; name?: string; email?: string }[];
+    members?: RoomMember[];
     onMessagesViewed?: (lastMessageId: string) => void;
     roomId?: string;
 }

@@ -1,9 +1,9 @@
 // lib/googleCalendar.ts — Server-side Google Calendar utilities
 import { adminDb } from './firebaseAdmin';
 
-const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID!;
-const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET!;
-const GOOGLE_REDIRECT_URI = process.env.GOOGLE_REDIRECT_URI || 'https://kin-loop.vercel.app/api/google/callback';
+const GOOGLE_CLIENT_ID = (process.env.GOOGLE_CLIENT_ID || '').trim();
+const GOOGLE_CLIENT_SECRET = (process.env.GOOGLE_CLIENT_SECRET || '').trim();
+const GOOGLE_REDIRECT_URI = (process.env.GOOGLE_REDIRECT_URI || 'https://kin-loop.vercel.app/api/google/callback').trim();
 const SCOPES = ['https://www.googleapis.com/auth/calendar'];
 const GCAL_API = 'https://www.googleapis.com/calendar/v3';
 

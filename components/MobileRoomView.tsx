@@ -2,7 +2,7 @@
 import React, { useState } from 'react';
 import { useRouter } from 'next/router';
 import { auth } from '../lib/firebase';
-import { ArrowLeft, Share2, Users, Copy, Check, ChevronDown, DoorOpen, Trash2, UserMinus } from 'lucide-react';
+import { ArrowLeft, Share2, Users, Copy, Check, ChevronDown, DoorOpen, Trash2, UserMinus, Bell, BellOff } from 'lucide-react';
 import type { RoomMember } from '../lib/firestoreUtils';
 
 interface MobileRoomViewProps {
@@ -15,11 +15,14 @@ interface MobileRoomViewProps {
     onLeaveRoom?: () => void;
     onDeleteRoom?: () => void;
     onRemoveMember?: (uid: string) => void;
+    dailyChoreReminders?: boolean;
+    onToggleDailyReminders?: () => void;
 }
 
 export default function MobileRoomView({
     roomName, members, inviteCode, children, onGetInviteCode,
     isOwner, onLeaveRoom, onDeleteRoom, onRemoveMember,
+    dailyChoreReminders, onToggleDailyReminders,
 }: MobileRoomViewProps) {
     const [view, setView] = useState<'main' | 'members'>('main');
     const [showInvite, setShowInvite] = useState(false);
@@ -108,6 +111,21 @@ export default function MobileRoomView({
                                 </div>
                             ))}
                         </div>
+
+                        {/* Settings */}
+                        {onToggleDailyReminders && (
+                            <div className="mt-6">
+                                <p className="text-xs font-semibold text-warmgray-500 uppercase tracking-wide mb-2">Settings</p>
+                                <button onClick={onToggleDailyReminders}
+                                    className="w-full flex items-center gap-3 px-4 py-3 bg-white border border-warmgray-200 rounded-xl transition-colors hover:bg-warmgray-50">
+                                    {dailyChoreReminders !== false ? <Bell size={16} className="text-amber-500" /> : <BellOff size={16} className="text-warmgray-400" />}
+                                    <span className="flex-1 text-left text-sm text-warmgray-700">Daily chore reminders</span>
+                                    <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${
+                                        dailyChoreReminders !== false ? 'bg-green-100 text-green-700' : 'bg-warmgray-100 text-warmgray-500'
+                                    }`}>{dailyChoreReminders !== false ? 'ON' : 'OFF'}</span>
+                                </button>
+                            </div>
+                        )}
 
                         {/* Room management actions */}
                         <div className="mt-6 space-y-2">

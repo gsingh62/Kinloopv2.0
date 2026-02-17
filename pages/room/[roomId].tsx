@@ -274,6 +274,17 @@ export default function RoomPage() {
         setMembers(prev => prev.filter(m => m.uid !== userId));
     };
 
+    const handleToggleDailyReminders = async () => {
+        if (!roomId) return;
+        const current = room?.dailyChoreReminders !== false; // default true
+        try {
+            await updateDoc(doc(db, 'rooms', roomId), { dailyChoreReminders: !current });
+            setRoom((prev: any) => ({ ...prev, dailyChoreReminders: !current }));
+        } catch (err) {
+            console.error('Failed to toggle daily reminders:', err);
+        }
+    };
+
     // Build a lightweight list summary for the AI context
     const [allLists, setAllLists] = useState<{id: string; name: string; type?: string}[]>([]);
     const [recipes, setRecipes] = useState<Recipe[]>([]);
@@ -451,6 +462,8 @@ export default function RoomPage() {
                     onLeaveRoom={handleLeaveRoom}
                     onDeleteRoom={handleDeleteRoom}
                     onRemoveMember={handleRemoveMember}
+                    dailyChoreReminders={room?.dailyChoreReminders}
+                    onToggleDailyReminders={handleToggleDailyReminders}
                 >
                     <NotificationBanner />
                     <div className="pb-20">
@@ -465,6 +478,8 @@ export default function RoomPage() {
                     onLeaveRoom={handleLeaveRoom}
                     onDeleteRoom={handleDeleteRoom}
                     onRemoveMember={handleRemoveMember}
+                    dailyChoreReminders={room?.dailyChoreReminders}
+                    onToggleDailyReminders={handleToggleDailyReminders}
                 >
                     <NotificationBanner />
                     {desktopTabBar}

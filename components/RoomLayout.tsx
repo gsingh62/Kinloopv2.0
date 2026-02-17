@@ -6,7 +6,7 @@ import { signOut } from 'firebase/auth';
 import { useRouter } from 'next/router';
 import {
     Copy, Check, LogOut, PanelLeftOpen, PanelLeftClose,
-    MoreVertical, DoorOpen, Trash2, UserMinus, Users, X,
+    MoreVertical, DoorOpen, Trash2, UserMinus, Users, X, Bell, BellOff,
 } from 'lucide-react';
 import type { RoomMember } from '../lib/firestoreUtils';
 
@@ -21,11 +21,14 @@ interface RoomLayoutProps {
     onLeaveRoom?: () => void;
     onDeleteRoom?: () => void;
     onRemoveMember?: (uid: string) => void;
+    dailyChoreReminders?: boolean;
+    onToggleDailyReminders?: () => void;
 }
 
 export default function RoomLayout({
     children, roomTitle, inviteCode, members = [], onGetInviteCode, showInviteButton = false,
     isOwner, onLeaveRoom, onDeleteRoom, onRemoveMember,
+    dailyChoreReminders, onToggleDailyReminders,
 }: RoomLayoutProps) {
     const router = useRouter();
     const user = auth.currentUser;
@@ -124,6 +127,16 @@ export default function RoomLayout({
                                         className="w-full flex items-center gap-2 px-3 py-2 text-sm text-warmgray-700 hover:bg-warmgray-50">
                                         <Users size={14} /> Members ({members.length})
                                     </button>
+                                    {onToggleDailyReminders && (
+                                        <button onClick={() => { onToggleDailyReminders(); setShowRoomMenu(false); }}
+                                            className="w-full flex items-center gap-2 px-3 py-2 text-sm text-warmgray-700 hover:bg-warmgray-50">
+                                            {dailyChoreReminders !== false ? <Bell size={14} className="text-amber-500" /> : <BellOff size={14} />}
+                                            Daily chore reminders
+                                            <span className={`ml-auto text-[10px] font-semibold px-1.5 py-0.5 rounded-full ${
+                                                dailyChoreReminders !== false ? 'bg-green-100 text-green-700' : 'bg-warmgray-100 text-warmgray-500'
+                                            }`}>{dailyChoreReminders !== false ? 'ON' : 'OFF'}</span>
+                                        </button>
+                                    )}
                                     <div className="my-1 border-t border-warmgray-100" />
                                     {onLeaveRoom && (
                                         <button onClick={() => { setShowRoomMenu(false); onLeaveRoom(); }}

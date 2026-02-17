@@ -326,13 +326,23 @@ export default function RoomPage() {
         handleTabSwitch('ai');
     }, [handleTabSwitch]);
 
-    // Handle Quick Add from dashboard (?tab=ai&prompt=...)
+    // Handle ?tab= query param (from email links, dashboard quick-add, etc.)
+    const validTabs = ['lists', 'chat', 'events', 'docs', 'photos', 'ai', 'recipes'];
     useEffect(() => {
         if (!router.isReady) return;
         const { tab, prompt } = router.query;
-        if (tab === 'ai' && typeof prompt === 'string' && prompt.trim()) {
+        const tabStr = typeof tab === 'string' ? tab : '';
+
+        if (tabStr && validTabs.includes(tabStr)) {
+            handleTabSwitch(tabStr);
+        }
+
+        if (tabStr === 'ai' && typeof prompt === 'string' && prompt.trim()) {
             setPendingAIPrompt(prompt.trim());
-            handleTabSwitch('ai');
+        }
+
+        // Clean up URL query params
+        if (tab || prompt) {
             router.replace(`/room/${roomId}`, undefined, { shallow: true });
         }
     }, [router.isReady]);

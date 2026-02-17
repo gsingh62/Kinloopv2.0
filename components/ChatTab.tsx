@@ -1,67 +1,149 @@
-// components/ChatTab.tsx — Chat with read receipts and online presence
+// components/ChatTab.tsx — Chat with attachments, read receipts and online presence
 import { useEffect, useRef, useState } from 'react';
 import EmojiPicker from 'emoji-picker-react';
-import { auth } from '../lib/firebase';
-import { Smile, Send, MessageCircle, CheckCheck, Check } from 'lucide-react';
+import { auth, storage } from '../lib/firebase';
+import { ref, uploadBytesResumable, getDownloadURL } from 'firebase/storage';
+import { Smile, Send, MessageCircle, CheckCheck, Check, Paperclip, Image as ImageIcon, FileText, X, Loader2, Download } from 'lucide-react';
 import type { ReadReceipt, PresenceData } from '../lib/presenceUtils';
+import type { MessageAttachment } from '../lib/firestoreUtils';
 
 interface ChatTabProps {
     messages: any[];
-    onSend: (content: string) => void;
+    onSend: (content: string, attachments?: MessageAttachment[]) => void;
     readReceipts?: ReadReceipt[];
     presence?: PresenceData[];
     members?: { uid: string; name?: string; email?: string }[];
     onMessagesViewed?: (lastMessageId: string) => void;
+    roomId?: string;
 }
 
-export default function ChatTab({ messages, onSend, readReceipts = [], presence = [], members = [], onMessagesViewed }: ChatTabProps) {
+interface PendingFile {
+    file: File;
+    previewUrl?: string;
+    type: 'image' | 'file';
+}
+
+export default function ChatTab({ messages, onSend, readReceipts = [], presence = [], members = [], onMessagesViewed, roomId }: ChatTabProps) {
     const [newMessage, setNewMessage] = useState('');
     const [showEmojiPicker, setShowEmojiPicker] = useState(false);
+    const [pendingFiles, setPendingFiles] = useState<PendingFile[]>([]);
+    const [uploading, setUploading] = useState(false);
+    const [uploadProgress, setUploadProgress] = useState(0);
+    const [lightboxUrl, setLightboxUrl] = useState<string | null>(null);
     const messagesEndRef = useRef<HTMLDivElement>(null);
-    const messagesContainerRef = useRef<HTMLDivElement>(null);
     const emojiRef = useRef<HTMLDivElement>(null);
     const inputRef = useRef<HTMLInputElement>(null);
+    const fileInputRef = useRef<HTMLInputElement>(null);
     const currentUid = auth.currentUser?.uid;
     const isInitialLoad = useRef(true);
 
     useEffect(() => {
         if (isInitialLoad.current) {
-            // First load: jump to bottom instantly (no visible scroll)
             messagesEndRef.current?.scrollIntoView({ behavior: 'instant' as ScrollBehavior });
             if (messages.length > 0) isInitialLoad.current = false;
         } else {
-            // New messages: smooth scroll
             messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
         }
     }, [messages]);
 
-    // Mark messages as read when viewing
     useEffect(() => {
         if (messages.length > 0 && onMessagesViewed) {
             const lastMsg = messages[messages.length - 1];
-            if (lastMsg?.id) {
-                onMessagesViewed(lastMsg.id);
-            }
+            if (lastMsg?.id) onMessagesViewed(lastMsg.id);
         }
     }, [messages, onMessagesViewed]);
 
     useEffect(() => {
         const handler = (e: MouseEvent) => {
-            if (emojiRef.current && !emojiRef.current.contains(e.target as Node)) {
-                setShowEmojiPicker(false);
-            }
+            if (emojiRef.current && !emojiRef.current.contains(e.target as Node)) setShowEmojiPicker(false);
         };
         document.addEventListener('mousedown', handler);
         return () => document.removeEventListener('mousedown', handler);
     }, []);
 
-    const handleSend = () => {
-        if (newMessage.trim()) {
+    const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+        const files = Array.from(e.target.files || []);
+        const newPending: PendingFile[] = files.map(file => {
+            const isImage = file.type.startsWith('image/');
+            return {
+                file,
+                previewUrl: isImage ? URL.createObjectURL(file) : undefined,
+                type: isImage ? 'image' : 'file',
+            };
+        });
+        setPendingFiles(prev => [...prev, ...newPending].slice(0, 5));
+        if (fileInputRef.current) fileInputRef.current.value = '';
+    };
+
+    const removePendingFile = (index: number) => {
+        setPendingFiles(prev => {
+            const removed = prev[index];
+            if (removed.previewUrl) URL.revokeObjectURL(removed.previewUrl);
+            return prev.filter((_, i) => i !== index);
+        });
+    };
+
+    const uploadFile = async (file: File): Promise<MessageAttachment> => {
+        const timestamp = Date.now();
+        const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_');
+        const storagePath = `rooms/${roomId}/chat/${timestamp}_${safeName}`;
+        const storageRef = ref(storage, storagePath);
+
+        return new Promise((resolve, reject) => {
+            const uploadTask = uploadBytesResumable(storageRef, file);
+            uploadTask.on('state_changed',
+                (snap) => setUploadProgress(Math.round((snap.bytesTransferred / snap.totalBytes) * 100)),
+                (err) => reject(err),
+                async () => {
+                    const url = await getDownloadURL(uploadTask.snapshot.ref);
+                    resolve({
+                        type: file.type.startsWith('image/') ? 'image' : 'file',
+                        url,
+                        name: file.name,
+                        size: file.size,
+                        mimeType: file.type,
+                        storagePath,
+                    });
+                }
+            );
+        });
+    };
+
+    const handleSend = async () => {
+        const hasText = newMessage.trim().length > 0;
+        const hasFiles = pendingFiles.length > 0;
+        if (!hasText && !hasFiles) return;
+
+        if (hasFiles) {
+            setUploading(true);
+            setUploadProgress(0);
+            try {
+                const attachments: MessageAttachment[] = [];
+                for (const pf of pendingFiles) {
+                    const att = await uploadFile(pf.file);
+                    attachments.push(att);
+                }
+                onSend(newMessage.trim() || '', attachments);
+                pendingFiles.forEach(pf => { if (pf.previewUrl) URL.revokeObjectURL(pf.previewUrl); });
+                setPendingFiles([]);
+            } catch (err) {
+                console.error('Upload failed:', err);
+            } finally {
+                setUploading(false);
+                setUploadProgress(0);
+            }
+        } else {
             onSend(newMessage.trim());
-            setNewMessage('');
-            setShowEmojiPicker(false);
-            inputRef.current?.focus();
         }
+        setNewMessage('');
+        setShowEmojiPicker(false);
+        inputRef.current?.focus();
+    };
+
+    const formatFileSize = (bytes: number) => {
+        if (bytes < 1024) return `${bytes} B`;
+        if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+        return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
     };
 
     const groupedMessages = messages.reduce<any[]>((groups, msg, i) => {
@@ -99,17 +181,8 @@ export default function ChatTab({ messages, onSend, readReceipts = [], presence 
         return colors[hash % colors.length];
     };
 
-    // Compute who has seen each message
-    function getSeenBy(messageId: string): string[] {
-        return readReceipts
-            .filter(r => r.lastReadMessageId === messageId && r.uid !== currentUid)
-            .map(r => r.name);
-    }
-
-    // For the last message of each group from me, show seen status
     function getMessageSeenStatus(messageId: string): 'sent' | 'seen' {
         const seenByOthers = readReceipts.filter(r => r.uid !== currentUid);
-        // Check if any other user has read up to or past this message
         const messageIdx = messages.findIndex(m => m.id === messageId);
         const hasBeenSeen = seenByOthers.some(r => {
             const theirIdx = messages.findIndex(m => m.id === r.lastReadMessageId);
@@ -118,20 +191,48 @@ export default function ChatTab({ messages, onSend, readReceipts = [], presence 
         return hasBeenSeen ? 'seen' : 'sent';
     }
 
-    // Find which messages are the "latest read" point for each user
     function getSeenByAtMessage(messageId: string): string[] {
         const names: string[] = [];
         for (const r of readReceipts) {
             if (r.uid === currentUid) continue;
-            if (r.lastReadMessageId === messageId) {
-                names.push(r.name);
-            }
+            if (r.lastReadMessageId === messageId) names.push(r.name);
         }
         return names;
     }
 
-    // Online members
     const onlineUids = new Set(presence.filter(p => p.isOnline).map(p => p.uid));
+
+    // ─── Render attachment inside a message bubble ───
+    const renderAttachments = (attachments: MessageAttachment[], isMe: boolean) => {
+        if (!attachments || attachments.length === 0) return null;
+        return (
+            <div className="flex flex-col gap-1.5 mt-1">
+                {attachments.map((att, i) => {
+                    if (att.type === 'image') {
+                        return (
+                            <button key={i} onClick={() => setLightboxUrl(att.url)} className="block rounded-lg overflow-hidden max-w-[240px]">
+                                <img src={att.url} alt={att.name} className="w-full rounded-lg" loading="lazy" />
+                            </button>
+                        );
+                    }
+                    return (
+                        <a key={i} href={att.url} target="_blank" rel="noopener noreferrer"
+                            className={`flex items-center gap-2 px-3 py-2 rounded-lg text-xs ${
+                                isMe ? 'bg-white/20 text-white hover:bg-white/30' : 'bg-warmgray-50 text-warmgray-700 hover:bg-warmgray-100'
+                            } transition-colors`}
+                        >
+                            <FileText size={16} className="flex-shrink-0" />
+                            <div className="flex-1 min-w-0">
+                                <p className="font-medium truncate">{att.name}</p>
+                                <p className={`${isMe ? 'text-white/70' : 'text-warmgray-400'}`}>{formatFileSize(att.size)}</p>
+                            </div>
+                            <Download size={14} className="flex-shrink-0" />
+                        </a>
+                    );
+                })}
+            </div>
+        );
+    };
 
     return (
         <div className="flex flex-col h-[calc(100vh-220px)] max-w-3xl mx-auto">
@@ -208,10 +309,13 @@ export default function ChatTab({ messages, onSend, readReceipts = [], presence 
                                 {group.messages.map((msg: any, mi: number) => {
                                     const isFirst = mi === 0;
                                     const isLast = mi === group.messages.length - 1;
+                                    const hasAttachments = msg.attachments && msg.attachments.length > 0;
+                                    const hasContent = msg.content && msg.content.trim();
+
                                     return (
                                         <div
                                             key={msg.id || mi}
-                                            className={`px-3.5 py-2 text-sm leading-relaxed ${
+                                            className={`${hasContent ? 'px-3.5 py-2' : hasAttachments ? 'p-1.5' : 'px-3.5 py-2'} text-sm leading-relaxed ${
                                                 isMe
                                                     ? 'bg-gradient-to-r from-kin-500 to-kin-600 text-white'
                                                     : 'bg-white text-warmgray-800 border border-warmgray-100'
@@ -219,18 +323,16 @@ export default function ChatTab({ messages, onSend, readReceipts = [], presence 
                                                 isMe
                                                     ? `${isFirst ? 'rounded-t-2xl rounded-bl-2xl' : 'rounded-l-2xl'} ${isLast ? 'rounded-b-2xl' : ''} ${!isFirst && !isLast ? 'rounded-bl-2xl' : ''} ${isFirst && isLast ? 'rounded-2xl' : ''}`
                                                     : `${isFirst ? 'rounded-t-2xl rounded-br-2xl' : 'rounded-r-2xl'} ${isLast ? 'rounded-b-2xl' : ''} ${!isFirst && !isLast ? 'rounded-br-2xl' : ''} ${isFirst && isLast ? 'rounded-2xl' : ''}`
-                                            } ${mi > 0 ? 'mt-0.5' : ''} shadow-sm`}
+                                            } ${mi > 0 ? 'mt-0.5' : ''} shadow-sm overflow-hidden`}
                                         >
-                                            {msg.content}
+                                            {hasContent && <span>{msg.content}</span>}
+                                            {renderAttachments(msg.attachments, isMe)}
                                         </div>
                                     );
                                 })}
 
-                                {/* Timestamp + seen status */}
                                 <div className={`flex items-center gap-1 mt-1 px-1 ${isMe ? 'flex-row-reverse' : ''}`}>
-                                    <span className="text-[10px] text-warmgray-400">
-                                        {formatTime(lastMsg.createdAt)}
-                                    </span>
+                                    <span className="text-[10px] text-warmgray-400">{formatTime(lastMsg.createdAt)}</span>
                                     {isMe && seenStatus && (
                                         seenStatus === 'seen'
                                             ? <CheckCheck size={13} className="text-blue-500" />
@@ -238,12 +340,9 @@ export default function ChatTab({ messages, onSend, readReceipts = [], presence 
                                     )}
                                 </div>
 
-                                {/* Seen by names (under the last message in a group) */}
                                 {seenNames.length > 0 && (
                                     <div className={`flex items-center gap-1 px-1 ${isMe ? 'flex-row-reverse' : ''}`}>
-                                        <span className="text-[9px] text-warmgray-400">
-                                            Seen by {seenNames.join(', ')}
-                                        </span>
+                                        <span className="text-[9px] text-warmgray-400">Seen by {seenNames.join(', ')}</span>
                                     </div>
                                 )}
                             </div>
@@ -252,6 +351,43 @@ export default function ChatTab({ messages, onSend, readReceipts = [], presence 
                 })}
                 <div ref={messagesEndRef} />
             </div>
+
+            {/* Pending files preview */}
+            {pendingFiles.length > 0 && (
+                <div className="px-2 py-2 border-t border-warmgray-100 bg-warmgray-50">
+                    <div className="flex gap-2 overflow-x-auto">
+                        {pendingFiles.map((pf, i) => (
+                            <div key={i} className="relative flex-shrink-0">
+                                {pf.type === 'image' && pf.previewUrl ? (
+                                    <div className="w-16 h-16 rounded-lg overflow-hidden bg-warmgray-200">
+                                        <img src={pf.previewUrl} alt="" className="w-full h-full object-cover" />
+                                    </div>
+                                ) : (
+                                    <div className="w-16 h-16 rounded-lg bg-warmgray-200 flex flex-col items-center justify-center p-1">
+                                        <FileText size={16} className="text-warmgray-500 mb-0.5" />
+                                        <span className="text-[8px] text-warmgray-500 truncate w-full text-center">{pf.file.name.split('.').pop()}</span>
+                                    </div>
+                                )}
+                                <button
+                                    onClick={() => removePendingFile(i)}
+                                    className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-warmgray-600 text-white rounded-full flex items-center justify-center hover:bg-red-500 transition-colors"
+                                >
+                                    <X size={10} />
+                                </button>
+                                <p className="text-[8px] text-warmgray-400 text-center mt-0.5 truncate w-16">{formatFileSize(pf.file.size)}</p>
+                            </div>
+                        ))}
+                    </div>
+                    {uploading && (
+                        <div className="mt-2">
+                            <div className="h-1.5 bg-warmgray-200 rounded-full overflow-hidden">
+                                <div className="h-full bg-kin-500 rounded-full transition-all" style={{ width: `${uploadProgress}%` }} />
+                            </div>
+                            <p className="text-[10px] text-warmgray-400 mt-0.5">Uploading... {uploadProgress}%</p>
+                        </div>
+                    )}
+                </div>
+            )}
 
             {/* Input Area */}
             <div className="relative border-t border-warmgray-100 bg-white pt-3 pb-1 px-1">
@@ -270,35 +406,53 @@ export default function ChatTab({ messages, onSend, readReceipts = [], presence 
                     </div>
                 )}
 
+                <input ref={fileInputRef} type="file" multiple accept="image/*,application/pdf,.doc,.docx,.xls,.xlsx,.txt,.csv,.zip" className="hidden" onChange={handleFileSelect} />
+
                 <div className="flex items-center gap-2">
                     <button
                         onClick={() => setShowEmojiPicker(!showEmojiPicker)}
                         className={`p-2.5 rounded-xl transition-colors ${
-                            showEmojiPicker
-                                ? 'bg-kin-50 text-kin-600'
-                                : 'text-warmgray-400 hover:text-warmgray-600 hover:bg-warmgray-100'
+                            showEmojiPicker ? 'bg-kin-50 text-kin-600' : 'text-warmgray-400 hover:text-warmgray-600 hover:bg-warmgray-100'
                         }`}
                     >
                         <Smile size={20} />
+                    </button>
+                    <button
+                        onClick={() => fileInputRef.current?.click()}
+                        disabled={uploading}
+                        className="p-2.5 rounded-xl text-warmgray-400 hover:text-warmgray-600 hover:bg-warmgray-100 transition-colors disabled:opacity-40"
+                        title="Attach file or photo"
+                    >
+                        <Paperclip size={20} />
                     </button>
                     <input
                         ref={inputRef}
                         type="text"
                         value={newMessage}
                         onChange={(e) => setNewMessage(e.target.value)}
-                        onKeyDown={(e) => { if (e.key === 'Enter') handleSend(); }}
-                        placeholder="Type a message..."
+                        onKeyDown={(e) => { if (e.key === 'Enter' && !uploading) handleSend(); }}
+                        placeholder={pendingFiles.length > 0 ? 'Add a caption...' : 'Type a message...'}
                         className="flex-1 px-4 py-2.5 bg-warmgray-50 border border-warmgray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-kin-500 focus:border-transparent placeholder-warmgray-400 transition-all"
                     />
                     <button
                         onClick={handleSend}
-                        disabled={!newMessage.trim()}
+                        disabled={(!newMessage.trim() && pendingFiles.length === 0) || uploading}
                         className="p-2.5 bg-gradient-to-r from-kin-500 to-kin-600 text-white rounded-xl hover:from-kin-600 hover:to-kin-700 disabled:opacity-40 transition-all"
                     >
-                        <Send size={18} />
+                        {uploading ? <Loader2 size={18} className="animate-spin" /> : <Send size={18} />}
                     </button>
                 </div>
             </div>
+
+            {/* Image Lightbox */}
+            {lightboxUrl && (
+                <div className="fixed inset-0 z-50 bg-black/95 flex items-center justify-center" onClick={() => setLightboxUrl(null)}>
+                    <button onClick={() => setLightboxUrl(null)} className="absolute top-4 right-4 p-2 text-white/60 hover:text-white bg-black/40 rounded-full z-10">
+                        <X size={24} />
+                    </button>
+                    <img src={lightboxUrl} alt="Full size" className="max-w-[95vw] max-h-[90vh] object-contain rounded-lg" onClick={(e) => e.stopPropagation()} />
+                </div>
+            )}
         </div>
     );
 }

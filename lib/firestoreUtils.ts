@@ -171,14 +171,33 @@ export const addListItem = async (roomId: string, text: string) => {
 /**
  * Send a message to a specific room's chat
  */
-export async function sendMessage(roomId: string, content: string, senderId: string, senderEmail: string) {
+export interface MessageAttachment {
+    type: 'image' | 'file';
+    url: string;
+    name: string;
+    size: number;
+    mimeType: string;
+    storagePath: string;
+}
+
+export async function sendMessage(
+    roomId: string,
+    content: string,
+    senderId: string,
+    senderEmail: string,
+    attachments?: MessageAttachment[],
+) {
     const messagesRef = collection(db, 'rooms', roomId, 'messages');
-    await addDoc(messagesRef, {
+    const msgData: any = {
         content,
         senderId,
         senderEmail,
         createdAt: serverTimestamp(),
-    });
+    };
+    if (attachments && attachments.length > 0) {
+        msgData.attachments = attachments;
+    }
+    await addDoc(messagesRef, msgData);
 }
 
 /**

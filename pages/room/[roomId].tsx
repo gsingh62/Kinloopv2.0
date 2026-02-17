@@ -19,6 +19,7 @@ import {
     deleteRoom,
     removeMember,
     type Recipe,
+    type MessageAttachment,
 } from '../../lib/firestoreUtils';
 import ChatTab from '../../components/ChatTab';
 import ListTab from '../../components/ListTab';
@@ -219,14 +220,16 @@ export default function RoomPage() {
         await deleteListItem(roomId, itemId);
     };
 
-    const handleSendMessage = async (content: string) => {
-        if (!content.trim() || (typeof roomId !== 'string')) return;
+    const handleSendMessage = async (content: string, attachments?: MessageAttachment[]) => {
+        if ((!content.trim() && (!attachments || attachments.length === 0)) || (typeof roomId !== 'string')) return;
         const user = auth.currentUser;
         if (!user) return;
-        await sendMessage(roomId, content, user.uid, user.email || '');
-        // Send push notification to other room members
+        await sendMessage(roomId, content, user.uid, user.email || '', attachments);
         const senderName = user.email?.split('@')[0] || 'Someone';
-        const preview = content.length > 80 ? content.slice(0, 80) + '...' : content;
+        const hasAttachments = attachments && attachments.length > 0;
+        const preview = hasAttachments
+            ? (content ? content : `sent ${attachments.length} file${attachments.length > 1 ? 's' : ''}`)
+            : (content.length > 80 ? content.slice(0, 80) + '...' : content);
         import('../../lib/pushUtils').then(m => m.notifyRoomMembers(roomId as string, user!.uid, `${senderName} in ${room?.name || 'KinLoop'}`, preview, `/room/${roomId}`));
     };
 
@@ -322,6 +325,7 @@ export default function RoomPage() {
                     presence={presenceData}
                     members={members}
                     onMessagesViewed={handleMessagesViewed}
+                    roomId={roomId as string}
                 />;
             case 'ai':
                 return roomId ? <AIChatTab roomId={roomId} roomName={room?.name || ''} lists={allLists} events={events} documents={documents} recipes={recipes} members={members} /> : null;
